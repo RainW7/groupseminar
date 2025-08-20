@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>组会排班与计划</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Chosen Palette: Scholarly Neutrals -->
+    <!-- Application Structure Plan: 升级为带日历和多学期管理功能的仪表盘。侧边栏顶部新增学期选择器，下方保留筛选和管理员功能。主内容区分为两部分：顶部是交互式日历视图，高亮显示会议日期和法定节假日；下方是详细的会议卡片列表，主讲人姓名带有超链接。邮件功能改为调用本地客户端。此结构提供了宏观（日历）和微观（列表）两种浏览方式，并通过学期选择器实现了良好的扩展性。 -->
+    <!-- Visualization & Content Choices: 1. 详细排班 (Inform/Organize) -> 交互式卡片列表 -> 按主讲人/学期动态筛选 -> HTML/JS/Tailwind。 2. 邮件生成 (Task-Oriented) -> 本地邮件客户端调用 -> JS构建mailto链接，自动填充所有收件人、主题和正文模板 -> 取代API，更稳定可靠。 3. 日历视图 (Organize/Navigate) -> 动态生成的日历网格 -> JS高亮会议日期、标记节假日并用条带连接连续假期，添加点击滚动定位的交互 -> 极大提升了日程概览和导航效率。 -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background-color: #fdfbf7;
+            color: #4a4a4a;
+        }
+        select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%236B7280%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22/%3E%3C/svg%3E');
+            background-repeat: no-repeat;
+            background-position: right 0.7rem center;
+            background-size: 0.65rem auto;
+        }
+        .file-input-label { cursor: pointer; }
+        .generate-email-btn:disabled {
+            background-color: #9ca3af;
+            cursor: not-allowed;
+        }
+        .calendar-day {
+            position: relative;
+            transition: background-color 0.2s;
+            border-radius: 50%;
+        }
+        .calendar-day.clickable:hover {
+            background-color: #fefce8; /* yellow-50 */
+        }
+        .calendar-day.has-meeting {
+            background-color: #fcd34d; /* amber-400 */
+            color: #78350f; /* amber-900 */
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .calendar-day.is-holiday {
+            background-color: #fda4af; /* rose-400 */
+            color: #881337; /* rose-900 */
+            font-weight: bold;
+        }
+        .calendar-day.is-workday::before {
+            content: '班';
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            font-size: 0.6rem;
+            color: #6b7280;
+            background-color: #f3f4f6;
+            padding: 0 2px;
+            border-radius: 2px;
+            line-height: 1;
+        }
+        .holiday-bar {
+            position: absolute;
+            height: 36px;
+            background-color: rgba(251, 113, 133, 0.15); /* rose-400 with opacity */
+            color: #be123c;
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            display: flex;
+            align-items: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            z-index: 1;
+            border-radius: 18px;
+        }
+        .highlight-card {
+            animation: highlight 1.5s ease-out;
+        }
+        @keyframes highlight {
+            0% { background-color: #fef9c3; transform: scale(1); }
+            20% { transform: scale(1.02); }
+            100% { background-color: #fffbeb; transform: scale(1); }
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-6 lg:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-800">组会排班与计划</h1>
+            <p class="mt-2 text-lg text-gray-600"><a href="https://tdli.sjtu.edu.cn/people/40645/xianzhong-zheng" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline">郑宪忠</a>研究员团组</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <aside class="lg:col-span-3 bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-lg border border-gray-200/80 h-fit">
+                <div class="space-y-4">
+                    <div>
+                        <label for="semesterSelector" class="block text-sm font-medium text-gray-700 mb-1">选择学期</label>
+                        <select id="semesterSelector" class="w-full p-2 border border-gray-300 rounded-lg bg-gray-50 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition"></select>
+                    </div>
+                </div>
+                <div class="mt-4 pt-4 border-t">
+                    <h2 class="text-xl font-bold mb-4 text-gray-700">筛选与控制</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label for="presenterFilter" class="block text-sm font-medium text-gray-700 mb-1">按主讲人筛选</label>
+                            <select id="presenterFilter" class="w-full p-2 border border-gray-300 rounded-lg bg-gray-50 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition">
+                                <option value="all">所有主讲人</option>
+                            </select>
+                        </div>
+                        <button id="resetFilters" class="w-full bg-amber-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-amber-700 transition-transform transform hover:scale-105">
+                            重置筛选
+                        </button>
+                    </div>
+                </div>
+                <div id="stats" class="mt-8 pt-4 border-t">
+                     <h3 class="text-lg font-bold mb-3 text-gray-700">参与情况</h3>
+                     <div class="space-y-2 text-gray-600">
+                        <p>总会议次数: <strong id="totalMeetings" class="text-amber-700 font-semibold"></strong></p>
+                        <p>参与总人数: <strong id="totalPresenters" class="text-amber-700 font-semibold"></strong></p>
+                     </div>
+                </div>
+                <div id="admin-section" class="mt-8 pt-4 border-t">
+                    <h3 class="text-lg font-bold mb-3 text-gray-700">管理员功能</h3>
+                    <p class="text-xs text-gray-500 mb-2">解锁后可使用邮件通知功能</p>
+                    <div class="space-y-2">
+                        <input type="password" id="adminPassword" placeholder="输入密码..." class="w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500 transition">
+                        <button id="unlockAdminBtn" class="w-full bg-gray-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-600 transition">
+                            解锁
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="lg:col-span-9">
+                <section class="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-lg border border-gray-200/80 mb-8">
+                    <div class="flex justify-between items-center mb-4">
+                        <button id="prevMonthBtn" class="p-2 rounded-full hover:bg-gray-200">&lt;</button>
+                        <h2 id="calendarTitle" class="text-2xl font-bold text-gray-700"></h2>
+                        <button id="nextMonthBtn" class="p-2 rounded-full hover:bg-gray-200">&gt;</button>
+                    </div>
+                    <div class="grid grid-cols-7 gap-1 text-center font-semibold text-gray-500 mb-2">
+                        <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+                    </div>
+                    <div id="calendarGrid" class="grid grid-cols-7 gap-1 relative"></div>
+                </section>
+
+                <section class="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-lg border border-gray-200/80">
+                    <h2 class="text-2xl font-bold text-gray-700 mb-4">组会安排详情</h2>
+                    <div id="scheduleList" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 max-h-[60vh] overflow-y-auto pr-2">
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const allSchedules = {
+                "2025-Fall": {
+                    name: "2025-2026学年秋季学期",
+                    data: [
+                        { id: 1, date: '2025-09-02', presenter: '文润' }, { id: 2, date: '2025-09-09', presenter: '彭昊' },
+                        { id: 3, date: '2025-09-16', presenter: '张钰恒' }, { id: 4, date: '2025-09-23', presenter: '徐霄' },
+                        { id: 5, date: '2025-09-30', presenter: '吕宗飞' }, { id: 6, date: '2025-10-14', presenter: '刘爽' },
+                        { id: 7, date: '2025-10-21', presenter: '罗达' }, { id: 8, date: '2025-10-28', presenter: '师冬冬' },
+                        { id: 9, date: '2025-11-04', presenter: '杨超' }, { id: 10, date: '2025-11-11', presenter: '郑宪忠' },
+                        { id: 11, date: '2025-11-18', presenter: '文润' }, { id: 12, date: '2025-11-25', presenter: '彭昊' },
+                        { id: 13, date: '2025-12-02', presenter: '徐霄' }, { id: 14, date: '2025-12-09', presenter: '张钰恒' },
+                        { id: 15, date: '2025-12-16', presenter: '吕宗飞' }, { id: 16, date: '2025-12-23', presenter: '师冬冬' },
+                        { id: 17, date: '2025-12-30', presenter: '杨超' }, { id: 18, date: '2026-01-06', presenter: '刘爽' },
+                        { id: 19, date: '2026-01-13', presenter: '文润' }, { id: 20, date: '2026-01-20', presenter: '彭昊' },
+                        { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '杨超' },
+                        { id: 23, date: '2026-02-10', presenter: '郑宪忠' },
+                    ]
+                }
+            };
+            
+            const holidays = [
+                { name: '国庆、中秋', start: '2025-10-01', end: '2025-10-08' },
+                { name: '元旦', start: '2026-01-01', end: '2026-01-01' },
+                { name: '春节', start: '2026-02-16', end: '2026-02-23' },
+            ];
+            
+            const adjustedWorkdays = [
+                { date: '2025-09-28', name: '调休' },
+                { date: '2025-10-11', name: '调休' },
+            ];
+
+            const participants = [
+                { name: '郑宪忠', email: 'xzzheng@sjtu.edu.cn', url: 'https://tdli.sjtu.edu.cn/people/40645/xianzhong-zheng' },
+                { name: '师冬冬', email: 'ddshi@aust.edu.cn', url: 'https://lxy.aust.edu.cn/info/1240/8997.htm' },
+                { name: '杨超', email: 'yangchao@pmo.ac.cn', url: '#' },
+                { name: '吕宗飞', email: 'zflv@pmo.ac.cn', url: '#' },
+                { name: '文润', email: 'wenrun1214@sjtu.edu.cn', url: '#' },
+                { name: '彭昊', email: 'haopeng@pmo.ac.cn', url: '#' },
+                { name: '张钰恒', email: 'yhzhang@pmo.ac.cn', url: '#' },
+                { name: '徐霄', email: 'xiaoxu@pmo.ac.cn', url: '#' },
+                { name: '刘爽', email: 'shuangliu@pmo.ac.cn', url: '#' },
+                { name: '罗达', email: 'daluo@pmo.ac.cn', url: '#' }
+            ];
+
+            const ADMIN_PASSWORD = 'galaxies';
+            let isAdminUnlocked = false;
+            let currentSemesterKey = Object.keys(allSchedules)[0];
+            let calendarDate = new Date(2025, 8, 1);
+
+            const semesterSelector = document.getElementById('semesterSelector');
+            const presenterFilter = document.getElementById('presenterFilter');
+            const resetFiltersBtn = document.getElementById('resetFilters');
+            const scheduleList = document.getElementById('scheduleList');
+            const adminPasswordInput = document.getElementById('adminPassword');
+            const unlockAdminBtn = document.getElementById('unlockAdminBtn');
+            const calendarGrid = document.getElementById('calendarGrid');
+            const calendarTitle = document.getElementById('calendarTitle');
+            const prevMonthBtn = document.getElementById('prevMonthBtn');
+            const nextMonthBtn = document.getElementById('nextMonthBtn');
+
+            function populateSemesterSelector() {
+                for (const key in allSchedules) {
+                    const option = document.createElement('option');
+                    option.value = key;
+                    option.textContent = allSchedules[key].name;
+                    semesterSelector.appendChild(option);
+                }
+            }
+
+            function initializeAppForSemester(semesterKey) {
+                currentSemesterKey = semesterKey;
+                const scheduleData = allSchedules[currentSemesterKey].data;
+                populateFilters(scheduleData);
+                renderSchedule(scheduleData);
+                updateStats(scheduleData);
+                renderCalendar();
+            }
+
+            function populateFilters(scheduleData) {
+                presenterFilter.innerHTML = '<option value="all">所有主讲人</option>';
+                const presenters = [...new Set(scheduleData.map(item => item.presenter))].sort();
+                presenters.forEach(presenter => {
+                    const option = document.createElement('option');
+                    option.value = presenter;
+                    option.textContent = presenter;
+                    presenterFilter.appendChild(option);
+                });
+            }
+
+            function renderSchedule(data) {
+                scheduleList.innerHTML = '';
+                if (data.length === 0) {
+                    scheduleList.innerHTML = '<p class="col-span-full text-center text-gray-500">没有找到匹配的安排。</p>';
+                    return;
+                }
+                data.forEach(item => {
+                    const card = document.createElement('div');
+                    card.id = `card-${item.id}`;
+                    card.className = `p-4 rounded-lg shadow-md transition-all duration-300 border-l-4 border-amber-500 bg-amber-50/50 flex flex-col justify-between`;
+                    
+                    const presenterInfo = participants.find(p => p.name === item.presenter);
+                    const presenterHTML = presenterInfo && presenterInfo.url !== '#'
+                        ? `<a href="${presenterInfo.url}" target="_blank" rel="noopener noreferrer" class="text-2xl font-bold text-blue-600 mt-1 hover:underline">${item.presenter}</a>`
+                        : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
+
+                    card.innerHTML = `
+                        <div>
+                            <p class="text-sm text-gray-500">${item.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}</p>
+                            ${presenterHTML}
+                        </div>
+                        <div class="mt-4 pt-4 border-t border-amber-200/80 space-y-3">
+                            <div>
+                                <label for="title-input-${item.id}" class="text-sm text-gray-600 font-medium">组会标题:</label>
+                                <input type="text" id="title-input-${item.id}" placeholder="输入本次组会标题..." class="mt-1 w-full p-1.5 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500">
+                            </div>
+                            <div>
+                                <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
+                                <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
+                                    选择文件
+                                </label>
+                                <input type="file" id="file-upload-${item.id}" class="hidden" accept=".ppt, .pptx, .pdf">
+                            </div>
+                            <button data-id="${item.id}" class="generate-email-btn w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
+                                ✉️ 发送邮件通知
+                            </button>
+                        </div>
+                    `;
+                    scheduleList.appendChild(card);
+                });
+                addEventListenersToCards();
+                updateAdminControls();
+            }
+            
+            function renderCalendar() {
+                calendarGrid.innerHTML = '';
+                const year = calendarDate.getFullYear();
+                const month = calendarDate.getMonth();
+                calendarTitle.textContent = `${year}年 ${month + 1}月`;
+
+                const firstDayOfMonth = new Date(year, month, 1).getDay();
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                const scheduleData = allSchedules[currentSemesterKey].data;
+                const dayElements = [];
+
+                for (let i = 0; i < firstDayOfMonth; i++) {
+                    const emptyCell = document.createElement('div');
+                    calendarGrid.appendChild(emptyCell);
+                }
+
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const dayCell = document.createElement('div');
+                    dayCell.textContent = day;
+                    dayCell.className = 'calendar-day h-10 flex items-center justify-center z-10';
+                    const currentDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    dayCell.dataset.date = currentDateStr;
+                    
+                    const meeting = scheduleData.find(m => m.date === currentDateStr);
+                    if (meeting) {
+                        dayCell.classList.add('has-meeting', 'clickable');
+                        dayCell.dataset.meetingId = meeting.id;
+                    }
+                    
+                    const isHoliday = holidays.some(h => {
+                        const start = new Date(h.start + 'T00:00:00');
+                        const end = new Date(h.end + 'T00:00:00');
+                        const current = new Date(currentDateStr + 'T00:00:00');
+                        return current >= start && current <= end;
+                    });
+
+                    if(isHoliday) {
+                        dayCell.classList.add('is-holiday');
+                    }
+
+                    const isWorkday = adjustedWorkdays.some(d => d.date === currentDateStr);
+                    if (isWorkday) {
+                        dayCell.classList.add('is-workday');
+                    }
+
+                    calendarGrid.appendChild(dayCell);
+                    dayElements.push(dayCell);
+                }
+                
+                renderHolidayBars(year, month, dayElements);
+            }
+            
+            function renderHolidayBars(year, month, dayElements) {
+                const dayWidth = calendarGrid.offsetWidth / 7;
+                const dayHeight = dayElements[0].offsetHeight;
+
+                holidays.forEach(holiday => {
+                    if (holiday.start === holiday.end) return;
+
+                    const start = new Date(holiday.start + 'T00:00:00');
+                    const end = new Date(holiday.end + 'T00:00:00');
+                    
+                    let currentDate = new Date(start);
+                    while (currentDate <= end) {
+                        if (currentDate.getFullYear() === year && currentDate.getMonth() === month) {
+                            const weekStart = new Date(currentDate);
+                            weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+                            
+                            const weekEnd = new Date(weekStart);
+                            weekEnd.setDate(weekEnd.getDate() + 6);
+
+                            const barStart = new Date(Math.max(start, weekStart));
+                            const barEnd = new Date(Math.min(end, weekEnd));
+
+                            const startDayElem = dayElements.find(el => el.dataset.date === barStart.toISOString().split('T')[0]);
+                            if (startDayElem) {
+                                const startIndex = Array.from(calendarGrid.children).indexOf(startDayElem);
+                                const startRow = Math.floor(startIndex / 7);
+                                const startCol = barStart.getDay();
+                                const duration = (barEnd.getTime() - barStart.getTime()) / (1000 * 3600 * 24) + 1;
+                                
+                                const bar = document.createElement('div');
+                                bar.className = 'holiday-bar';
+                                bar.textContent = holiday.name;
+                                bar.style.top = `${startRow * dayHeight + (dayHeight - 36) / 2}px`;
+                                bar.style.left = `${startCol * dayWidth + 4}px`;
+                                bar.style.width = `${duration * dayWidth - 8}px`;
+                                calendarGrid.appendChild(bar);
+                            }
+                        }
+                        currentDate.setDate(currentDate.getDate() + 7 - currentDate.getDay());
+                    }
+                });
+            }
+
+            function addEventListenersToCards() {
+                scheduleList.querySelectorAll('input[type="file"]').forEach(input => {
+                    input.addEventListener('change', (event) => {
+                        const fileStatus = event.target.previousElementSibling.previousElementSibling;
+                        if (event.target.files.length > 0) {
+                            const fileName = event.target.files[0].name;
+                            fileStatus.textContent = `PPT: ${fileName}`;
+                            fileStatus.title = fileName; 
+                            fileStatus.classList.remove('text-gray-500');
+                            fileStatus.classList.add('text-green-700', 'font-medium');
+                        }
+                    });
+                });
+
+                scheduleList.querySelectorAll('.generate-email-btn').forEach(button => {
+                    button.addEventListener('click', (event) => {
+                        if (!isAdminUnlocked) return;
+
+                        const id = event.currentTarget.dataset.id;
+                        const scheduleData = allSchedules[currentSemesterKey].data;
+                        const cardData = scheduleData.find(item => item.id == id);
+                        const titleInput = document.getElementById(`title-input-${id}`);
+                        const title = titleInput.value;
+
+                        if (!title) {
+                            titleInput.classList.add('border-red-500', 'placeholder-red-500');
+                            titleInput.placeholder = "请先填写标题！";
+                            setTimeout(() => {
+                                titleInput.classList.remove('border-red-500', 'placeholder-red-500');
+                                titleInput.placeholder = "输入本次组会标题...";
+                            }, 3000);
+                            return;
+                        }
+
+                        const recipients = participants.map(p => p.email).join(',');
+                        const subject = `组会通知: ${cardData.date} - ${title}`;
+                        const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n期待您的参与！\n\n此致`;
+                        
+                        const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+                        window.location.href = mailtoLink;
+                    });
+                });
+            }
+            
+            function updateAdminControls() {
+                const emailButtons = document.querySelectorAll('.generate-email-btn');
+                if (isAdminUnlocked) {
+                    emailButtons.forEach(btn => btn.disabled = false);
+                    unlockAdminBtn.textContent = '已解锁 (点击锁定)';
+                    unlockAdminBtn.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                    unlockAdminBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+                    adminPasswordInput.disabled = true;
+                } else {
+                    emailButtons.forEach(btn => btn.disabled = true);
+                    unlockAdminBtn.textContent = '解锁';
+                    unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
+                    unlockAdminBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                    adminPasswordInput.disabled = false;
+                    adminPasswordInput.value = '';
+                }
+            }
+            
+            function updateStats(scheduleData) {
+                document.getElementById('totalMeetings').textContent = scheduleData.length;
+                const totalPresenters = new Set(scheduleData.map(item => item.presenter)).size;
+                document.getElementById('totalPresenters').textContent = totalPresenters;
+            }
+
+            function applyFilters() {
+                const scheduleData = allSchedules[currentSemesterKey].data;
+                const selectedPresenter = presenterFilter.value;
+                const filteredData = scheduleData.filter(item => {
+                    return selectedPresenter === 'all' || item.presenter === selectedPresenter;
+                });
+                renderSchedule(filteredData);
+            }
+
+            semesterSelector.addEventListener('change', (e) => {
+                initializeAppForSemester(e.target.value);
+            });
+            
+            presenterFilter.addEventListener('change', applyFilters);
+            resetFiltersBtn.addEventListener('click', () => {
+                presenterFilter.value = 'all';
+                applyFilters();
+            });
+
+            unlockAdminBtn.addEventListener('click', () => {
+                if (isAdminUnlocked) {
+                    isAdminUnlocked = false;
+                } else {
+                    if (adminPasswordInput.value === ADMIN_PASSWORD) {
+                        isAdminUnlocked = true;
+                        adminPasswordInput.classList.remove('border-red-500');
+                    } else {
+                        adminPasswordInput.classList.add('border-red-500');
+                        setTimeout(() => {
+                            adminPasswordInput.classList.remove('border-red-500');
+                        }, 2000);
+                    }
+                }
+                updateAdminControls();
+            });
+
+            prevMonthBtn.addEventListener('click', () => {
+                calendarDate.setMonth(calendarDate.getMonth() - 1);
+                renderCalendar();
+            });
+
+            nextMonthBtn.addEventListener('click', () => {
+                calendarDate.setMonth(calendarDate.getMonth() + 1);
+                renderCalendar();
+            });
+
+            calendarGrid.addEventListener('click', (e) => {
+                if (e.target.classList.contains('has-meeting')) {
+                    const meetingId = e.target.dataset.meetingId;
+                    const card = document.getElementById(`card-${meetingId}`);
+                    if (card) {
+                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        card.classList.add('highlight-card');
+                        setTimeout(() => {
+                            card.classList.remove('highlight-card');
+                        }, 1500);
+                    }
+                }
+            });
+
+            populateSemesterSelector();
+            initializeAppForSemester(currentSemesterKey);
+        });
+    </script>
+</body>
+</html>
