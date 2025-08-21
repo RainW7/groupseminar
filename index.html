@@ -28,8 +28,13 @@
             background-size: 0.65rem auto;
         }
         .file-input-label { cursor: pointer; }
-        .generate-email-btn:disabled {
+        .admin-control:disabled {
             background-color: #9ca3af;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        .delete-file-btn:disabled {
+            color: #9ca3af;
             cursor: not-allowed;
         }
         .calendar-day {
@@ -234,7 +239,7 @@
                     apiKey: "AIzaSyAiF5ftwE-R7FbUnjPKqy654wbdmcXmJE0",
                     authDomain: "xzz-s-seminar.firebaseapp.com",
                     projectId: "xzz-s-seminar",
-                    storageBucket: "xzz-s-seminar.firebasestorage.app",
+                    storageBucket: "xzz-s-seminar.appspot.com",
                     messagingSenderId: "97868292703",
                     appId: "1:97868292703:web:bc1cf080ef600ef6a171ea",
                     measurementId: "G-XWWW57GQYZ"
@@ -349,7 +354,7 @@
                         ? `
                             <div class="flex items-center justify-between">
                                 <a href="${item.fileURL}" target="_blank" class="text-sm text-green-700 font-medium truncate hover:underline" title="${item.fileName}">PPT: ${item.fileName}</a>
-                                ${item.uploaderUid === currentUser.uid ? `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800">删除</button>` : ''}
+                                <button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>
                             </div>
                         `
                         : `
@@ -376,7 +381,7 @@
                             <div id="file-section-${item.id}">
                                 ${fileHTML}
                             </div>
-                            <button data-id="${item.id}" class="generate-email-btn w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
+                            <button data-id="${item.id}" class="generate-email-btn admin-control w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
                                 ✉️ 发送邮件通知
                             </button>
                         </div>
@@ -533,6 +538,7 @@
             }
 
             async function handleFileDelete(event) {
+                if (!isAdminUnlocked) return;
                 const meetingId = event.target.dataset.id;
                 const scheduleData = firestoreData[currentSemesterKey] || [];
                 const meeting = scheduleData.find(m => m.id === meetingId);
@@ -582,14 +588,18 @@
             
             function updateAdminControls() {
                 const emailButtons = document.querySelectorAll('.generate-email-btn');
+                const deleteButtons = document.querySelectorAll('.delete-file-btn');
+
                 if (isAdminUnlocked) {
                     emailButtons.forEach(btn => btn.disabled = false);
+                    deleteButtons.forEach(btn => btn.disabled = false);
                     unlockAdminBtn.textContent = '已解锁 (点击锁定)';
                     unlockAdminBtn.classList.remove('bg-gray-500', 'hover:bg-gray-600');
                     unlockAdminBtn.classList.add('bg-green-600', 'hover:bg-green-700');
                     adminPasswordInput.disabled = true;
                 } else {
                     emailButtons.forEach(btn => btn.disabled = true);
+                    deleteButtons.forEach(btn => btn.disabled = true);
                     unlockAdminBtn.textContent = '解锁';
                     unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
                     unlockAdminBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
@@ -663,7 +673,9 @@
 
             onAuthStateChanged(auth, user => {
                 if (user) {
-                    startApp(user);
+                    if (!currentUser) { // Run only on initial authentication
+                        startApp(user);
+                    }
                 } else {
                     signInAnonymously(auth).catch(error => {
                         console.error("Anonymous sign-in failed:", error);
@@ -675,4 +687,3 @@
     </script>
 </body>
 </html>
-
