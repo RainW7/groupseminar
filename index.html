@@ -56,6 +56,9 @@
             color: #881337;
             font-weight: bold;
         }
+        .calendar-day.is-today {
+            box-shadow: 0 0 0 2px #3b82f6 inset;
+        }
         .calendar-day.is-workday::before {
             content: '班';
             position: absolute;
@@ -265,7 +268,7 @@
             let currentUser = null;
             let isAdminUnlocked = false;
             let currentSemesterKey = Object.keys(allSchedules)[0];
-            let calendarDate = new Date(2025, 8, 1);
+            let calendarDate = new Date(); // Set to current date on load
             let firestoreData = {};
             let unsubscribe = null;
 
@@ -402,6 +405,10 @@
                 const daysInMonth = new Date(year, month + 1, 0).getDate();
                 const scheduleData = firestoreData[currentSemesterKey] || [];
                 const dayElements = [];
+                
+                const today = new Date();
+                const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
 
                 for (let i = 0; i < firstDayOfMonth; i++) {
                     const emptyCell = document.createElement('div');
@@ -414,6 +421,10 @@
                     dayCell.className = 'calendar-day h-10 flex items-center justify-center z-10';
                     const currentDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                     dayCell.dataset.date = currentDateStr;
+
+                    if (currentDateStr === todayStr) {
+                        dayCell.classList.add('is-today');
+                    }
                     
                     const meeting = scheduleData.find(m => m.date === currentDateStr);
                     if (meeting) {
