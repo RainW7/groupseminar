@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>组会排班与计划</title>
+    <title>组会排班与计划 (Firebase版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
     <!-- Chosen Palette: Scholarly Neutrals -->
-    <!-- Application Structure Plan: 升级为带日历和多学期管理功能的仪表盘。侧边栏顶部新增学期选择器，下方保留筛选和管理员功能。主内容区分为两部分：顶部是交互式日历视图，高亮显示会议日期和法定节假日；下方是详细的会议卡片列表，主讲人姓名带有超链接。邮件功能改为调用本地客户端。此结构提供了宏观（日历）和微观（列表）两种浏览方式，并通过学期选择器实现了良好的扩展性。 -->
-    <!-- Visualization & Content Choices: 1. 详细排班 (Inform/Organize) -> 交互式卡片列表 -> 按主讲人/学期动态筛选 -> HTML/JS/Tailwind。 2. 邮件生成 (Task-Oriented) -> 本地邮件客户端调用 -> JS构建mailto链接，自动填充所有收件人、主题和正文模板 -> 取代API，更稳定可靠。 3. 日历视图 (Organize/Navigate) -> 动态生成的日历网格 -> JS高亮会议日期、标记节假日并用条带连接连续假期，添加点击滚动定位的交互 -> 极大提升了日程概览和导航效率。 -->
+    <!-- Application Structure Plan: The application is now a full-stack serverless app using Firebase. Data is stored in Firestore and files in Cloud Storage. The UI is real-time, updating automatically for all users via Firestore snapshots. This provides data persistence, real-time collaboration, and true cloud file storage. -->
+    <!-- Visualization & Content Choices: 1. Schedule Details -> Interactive cards populated from Firestore. 2. File Management -> Uploads to Firebase Storage, with download links stored in Firestore. UI shows upload progress, download links, and a delete button for the uploader. 3. Calendar View -> Still driven by Firestore data, providing a real-time overview. -->
     <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
     <style>
         body {
@@ -38,17 +38,17 @@
             border-radius: 50%;
         }
         .calendar-day.clickable:hover {
-            background-color: #fefce8; /* yellow-50 */
+            background-color: #fefce8;
         }
         .calendar-day.has-meeting {
-            background-color: #fcd34d; /* amber-400 */
-            color: #78350f; /* amber-900 */
+            background-color: #fcd34d;
+            color: #78350f;
             font-weight: bold;
             cursor: pointer;
         }
         .calendar-day.is-holiday {
-            background-color: #fda4af; /* rose-400 */
-            color: #881337; /* rose-900 */
+            background-color: #fda4af;
+            color: #881337;
             font-weight: bold;
         }
         .calendar-day.is-workday::before {
@@ -66,7 +66,7 @@
         .holiday-bar {
             position: absolute;
             height: 36px;
-            background-color: rgba(251, 113, 133, 0.15); /* rose-400 with opacity */
+            background-color: rgba(251, 113, 133, 0.15);
             color: #be123c;
             font-size: 0.75rem;
             padding: 2px 8px;
@@ -86,9 +86,25 @@
             20% { transform: scale(1.02); }
             100% { background-color: #fffbeb; transform: scale(1); }
         }
+        .progress-bar {
+            background-color: #e5e7eb;
+            border-radius: 9999px;
+            overflow: hidden;
+            width: 100%;
+            height: 8px;
+        }
+        .progress-bar-inner {
+            background-color: #3b82f6;
+            height: 100%;
+            transition: width 0.3s ease-in-out;
+        }
     </style>
 </head>
 <body class="min-h-screen p-4 sm:p-6 lg:p-8">
+
+    <div id="loading-overlay" class="fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-50">
+        <p class="text-lg font-semibold text-gray-700">正在连接服务器...</p>
+    </div>
 
     <div class="max-w-7xl mx-auto">
         <header class="text-center mb-8">
@@ -159,57 +175,76 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+
+        const allSchedules = {
+            "2025-Fall": {
+                name: "2025-2026学年秋季学期",
+                data: [
+                    { id: 1, date: '2025-09-02', presenter: '文润' }, { id: 2, date: '2025-09-09', presenter: '彭昊' },
+                    { id: 3, date: '2025-09-16', presenter: '张钰恒' }, { id: 4, date: '2025-09-23', presenter: '徐霄' },
+                    { id: 5, date: '2025-09-30', presenter: '吕宗飞' }, { id: 6, date: '2025-10-14', presenter: '刘爽' },
+                    { id: 7, date: '2025-10-21', presenter: '罗达' }, { id: 8, date: '2025-10-28', presenter: '师冬冬' },
+                    { id: 9, date: '2025-11-04', presenter: '杨超' }, { id: 10, date: '2025-11-11', presenter: '郑宪忠' },
+                    { id: 11, date: '2025-11-18', presenter: '文润' }, { id: 12, date: '2025-11-25', presenter: '彭昊' },
+                    { id: 13, date: '2025-12-02', presenter: '徐霄' }, { id: 14, date: '2025-12-09', presenter: '张钰恒' },
+                    { id: 15, date: '2025-12-16', presenter: '吕宗飞' }, { id: 16, date: '2025-12-23', presenter: '师冬冬' },
+                    { id: 17, date: '2025-12-30', presenter: '杨超' }, { id: 18, date: '2026-01-06', presenter: '刘爽' },
+                    { id: 19, date: '2026-01-13', presenter: '文润' }, { id: 20, date: '2026-01-20', presenter: '彭昊' },
+                    { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '杨超' },
+                    { id: 23, date: '2026-02-10', presenter: '郑宪忠' },
+                ]
+            }
+        };
+        
+        const holidays = [
+            { name: '国庆、中秋', start: '2025-10-01', end: '2025-10-08' },
+            { name: '元旦', start: '2026-01-01', end: '2026-01-01' },
+            { name: '春节', start: '2026-02-16', end: '2026-02-23' },
+        ];
+        
+        const adjustedWorkdays = [
+            { date: '2025-09-28', name: '调休' },
+            { date: '2025-10-11', name: '调休' },
+        ];
+
+        const participants = [
+            { name: '郑宪忠', email: 'xzzheng@sjtu.edu.cn', url: 'https://tdli.sjtu.edu.cn/people/40645/xianzhong-zheng' },
+            { name: '师冬冬', email: 'ddshi@aust.edu.cn', url: 'https://lxy.aust.edu.cn/info/1240/8997.htm' },
+            { name: '杨超', email: 'yangchao@pmo.ac.cn', url: '#' },
+            { name: '吕宗飞', email: 'zflv@pmo.ac.cn', url: '#' },
+            { name: '文润', email: 'wenrun1214@sjtu.edu.cn', url: '#' },
+            { name: '彭昊', email: 'haopeng@pmo.ac.cn', url: '#' },
+            { name: '张钰恒', email: 'yhzhang@pmo.ac.cn', url: '#' },
+            { name: '徐霄', email: 'xiaoxu@pmo.ac.cn', url: '#' },
+            { name: '刘爽', email: 'shuangliu@pmo.ac.cn', url: '#' },
+            { name: '罗达', email: 'daluo@pmo.ac.cn', url: '#' }
+        ];
+
+        const ADMIN_PASSWORD = 'galaxies';
+
         document.addEventListener('DOMContentLoaded', () => {
-            const allSchedules = {
-                "2025-Fall": {
-                    name: "2025-2026学年秋季学期",
-                    data: [
-                        { id: 1, date: '2025-09-02', presenter: '文润' }, { id: 2, date: '2025-09-09', presenter: '彭昊' },
-                        { id: 3, date: '2025-09-16', presenter: '张钰恒' }, { id: 4, date: '2025-09-23', presenter: '徐霄' },
-                        { id: 5, date: '2025-09-30', presenter: '吕宗飞' }, { id: 6, date: '2025-10-14', presenter: '刘爽' },
-                        { id: 7, date: '2025-10-21', presenter: '罗达' }, { id: 8, date: '2025-10-28', presenter: '师冬冬' },
-                        { id: 9, date: '2025-11-04', presenter: '杨超' }, { id: 10, date: '2025-11-11', presenter: '郑宪忠' },
-                        { id: 11, date: '2025-11-18', presenter: '文润' }, { id: 12, date: '2025-11-25', presenter: '彭昊' },
-                        { id: 13, date: '2025-12-02', presenter: '徐霄' }, { id: 14, date: '2025-12-09', presenter: '张钰恒' },
-                        { id: 15, date: '2025-12-16', presenter: '吕宗飞' }, { id: 16, date: '2025-12-23', presenter: '师冬冬' },
-                        { id: 17, date: '2025-12-30', presenter: '杨超' }, { id: 18, date: '2026-01-06', presenter: '刘爽' },
-                        { id: 19, date: '2026-01-13', presenter: '文润' }, { id: 20, date: '2026-01-20', presenter: '彭昊' },
-                        { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '杨超' },
-                        { id: 23, date: '2026-02-10', presenter: '郑宪忠' },
-                    ]
-                }
-            };
+            const firebaseConfig = typeof __firebase_config !== 'undefined' 
+                ? JSON.parse(__firebase_config) 
+                : {
+                    apiKey: "AIzaSyAiF5ftwE-R7FbUnjPKqy654wbdmcXmJE0",
+                    authDomain: "xzz-s-seminar.firebaseapp.com",
+                    projectId: "xzz-s-seminar",
+                    storageBucket: "xzz-s-seminar.firebasestorage.app",
+                    messagingSenderId: "97868292703",
+                    appId: "1:97868292703:web:bc1cf080ef600ef6a171ea",
+                    measurementId: "G-XWWW57GQYZ"
+                  };
+
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const storage = getStorage(app);
             
-            const holidays = [
-                { name: '国庆、中秋', start: '2025-10-01', end: '2025-10-08' },
-                { name: '元旦', start: '2026-01-01', end: '2026-01-01' },
-                { name: '春节', start: '2026-02-16', end: '2026-02-23' },
-            ];
-            
-            const adjustedWorkdays = [
-                { date: '2025-09-28', name: '调休' },
-                { date: '2025-10-11', name: '调休' },
-            ];
-
-            const participants = [
-                { name: '郑宪忠', email: 'xzzheng@sjtu.edu.cn', url: 'https://tdli.sjtu.edu.cn/people/40645/xianzhong-zheng' },
-                { name: '师冬冬', email: 'ddshi@aust.edu.cn', url: 'https://lxy.aust.edu.cn/info/1240/8997.htm' },
-                { name: '杨超', email: 'yangchao@pmo.ac.cn', url: '#' },
-                { name: '吕宗飞', email: 'zflv@pmo.ac.cn', url: '#' },
-                { name: '文润', email: 'wenrun1214@sjtu.edu.cn', url: '#' },
-                { name: '彭昊', email: 'haopeng@pmo.ac.cn', url: '#' },
-                { name: '张钰恒', email: 'yhzhang@pmo.ac.cn', url: '#' },
-                { name: '徐霄', email: 'xiaoxu@pmo.ac.cn', url: '#' },
-                { name: '刘爽', email: 'shuangliu@pmo.ac.cn', url: '#' },
-                { name: '罗达', email: 'daluo@pmo.ac.cn', url: '#' }
-            ];
-
-            const ADMIN_PASSWORD = 'galaxies';
-            let isAdminUnlocked = false;
-            let currentSemesterKey = Object.keys(allSchedules)[0];
-            let calendarDate = new Date(2025, 8, 1);
-
             const semesterSelector = document.getElementById('semesterSelector');
             const presenterFilter = document.getElementById('presenterFilter');
             const resetFiltersBtn = document.getElementById('resetFilters');
@@ -220,6 +255,23 @@
             const calendarTitle = document.getElementById('calendarTitle');
             const prevMonthBtn = document.getElementById('prevMonthBtn');
             const nextMonthBtn = document.getElementById('nextMonthBtn');
+            const loadingOverlay = document.getElementById('loading-overlay');
+
+            let currentUser = null;
+            let isAdminUnlocked = false;
+            let currentSemesterKey = Object.keys(allSchedules)[0];
+            let calendarDate = new Date(2025, 8, 1);
+            let firestoreData = {};
+            let unsubscribe = null;
+
+            function startApp(user) {
+                currentUser = user;
+                console.log("Authenticated anonymously:", currentUser.uid);
+                populateSemesterSelector();
+                listenToSemesterData(currentSemesterKey);
+                attachGlobalEventListeners();
+                loadingOverlay.style.display = 'none';
+            }
 
             function populateSemesterSelector() {
                 for (const key in allSchedules) {
@@ -230,24 +282,51 @@
                 }
             }
 
-            function initializeAppForSemester(semesterKey) {
+            function listenToSemesterData(semesterKey) {
+                if (unsubscribe) unsubscribe(); 
+
                 currentSemesterKey = semesterKey;
-                const scheduleData = allSchedules[currentSemesterKey].data;
-                populateFilters(scheduleData);
-                renderSchedule(scheduleData);
-                updateStats(scheduleData);
-                renderCalendar();
+                const meetingsCol = collection(db, "semesters", semesterKey, "meetings");
+                
+                unsubscribe = onSnapshot(meetingsCol, (snapshot) => {
+                    const meetings = [];
+                    snapshot.forEach(doc => {
+                        meetings.push({ id: doc.id, ...doc.data() });
+                    });
+                    
+                    if (meetings.length === 0 && allSchedules[semesterKey]) {
+                        seedInitialData(semesterKey);
+                        return;
+                    }
+
+                    meetings.sort((a, b) => new Date(a.date) - new Date(b.date));
+                    firestoreData[semesterKey] = meetings;
+                    
+                    populateFilters(meetings);
+                    applyFilters();
+                    updateStats(meetings);
+                    renderCalendar();
+                });
             }
 
-            function populateFilters(scheduleData) {
-                presenterFilter.innerHTML = '<option value="all">所有主讲人</option>';
-                const presenters = [...new Set(scheduleData.map(item => item.presenter))].sort();
-                presenters.forEach(presenter => {
-                    const option = document.createElement('option');
-                    option.value = presenter;
-                    option.textContent = presenter;
-                    presenterFilter.appendChild(option);
+            async function seedInitialData(semesterKey) {
+                console.log(`No data for ${semesterKey}, seeding from local source...`);
+                const localData = allSchedules[semesterKey].data;
+                const batch = writeBatch(db);
+                localData.forEach(meeting => {
+                    const docRef = doc(db, "semesters", semesterKey, "meetings", String(meeting.id));
+                    batch.set(docRef, meeting);
                 });
+                await batch.commit();
+            }
+
+            function applyFilters() {
+                const scheduleData = firestoreData[currentSemesterKey] || [];
+                const selectedPresenter = presenterFilter.value;
+                const filteredData = scheduleData.filter(item => {
+                    return selectedPresenter === 'all' || item.presenter === selectedPresenter;
+                });
+                renderSchedule(filteredData);
             }
 
             function renderSchedule(data) {
@@ -266,6 +345,24 @@
                         ? `<a href="${presenterInfo.url}" target="_blank" rel="noopener noreferrer" class="text-2xl font-bold text-blue-600 mt-1 hover:underline">${item.presenter}</a>`
                         : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
 
+                    const fileHTML = item.fileURL
+                        ? `
+                            <div class="flex items-center justify-between">
+                                <a href="${item.fileURL}" target="_blank" class="text-sm text-green-700 font-medium truncate hover:underline" title="${item.fileName}">PPT: ${item.fileName}</a>
+                                ${item.uploaderUid === currentUser.uid ? `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800">删除</button>` : ''}
+                            </div>
+                        `
+                        : `
+                            <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
+                            <div id="progress-container-${item.id}" class="hidden my-2">
+                                <div class="progress-bar"><div id="progress-bar-${item.id}" class="progress-bar-inner"></div></div>
+                            </div>
+                            <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
+                                选择文件
+                            </label>
+                            <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
+                        `;
+
                     card.innerHTML = `
                         <div>
                             <p class="text-sm text-gray-500">${item.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}</p>
@@ -274,14 +371,10 @@
                         <div class="mt-4 pt-4 border-t border-amber-200/80 space-y-3">
                             <div>
                                 <label for="title-input-${item.id}" class="text-sm text-gray-600 font-medium">组会标题:</label>
-                                <input type="text" id="title-input-${item.id}" placeholder="输入本次组会标题..." class="mt-1 w-full p-1.5 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500">
+                                <input type="text" id="title-input-${item.id}" data-id="${item.id}" value="${item.title || ''}" placeholder="输入并自动保存..." class="title-input mt-1 w-full p-1.5 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500">
                             </div>
-                            <div>
-                                <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
-                                <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
-                                    选择文件
-                                </label>
-                                <input type="file" id="file-upload-${item.id}" class="hidden" accept=".ppt, .pptx, .pdf">
+                            <div id="file-section-${item.id}">
+                                ${fileHTML}
                             </div>
                             <button data-id="${item.id}" class="generate-email-btn w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
                                 ✉️ 发送邮件通知
@@ -293,7 +386,7 @@
                 addEventListenersToCards();
                 updateAdminControls();
             }
-            
+
             function renderCalendar() {
                 calendarGrid.innerHTML = '';
                 const year = calendarDate.getFullYear();
@@ -302,7 +395,7 @@
 
                 const firstDayOfMonth = new Date(year, month, 1).getDay();
                 const daysInMonth = new Date(year, month + 1, 0).getDate();
-                const scheduleData = allSchedules[currentSemesterKey].data;
+                const scheduleData = firestoreData[currentSemesterKey] || [];
                 const dayElements = [];
 
                 for (let i = 0; i < firstDayOfMonth; i++) {
@@ -330,14 +423,10 @@
                         return current >= start && current <= end;
                     });
 
-                    if(isHoliday) {
-                        dayCell.classList.add('is-holiday');
-                    }
+                    if(isHoliday) dayCell.classList.add('is-holiday');
 
                     const isWorkday = adjustedWorkdays.some(d => d.date === currentDateStr);
-                    if (isWorkday) {
-                        dayCell.classList.add('is-workday');
-                    }
+                    if (isWorkday) dayCell.classList.add('is-workday');
 
                     calendarGrid.appendChild(dayCell);
                     dayElements.push(dayCell);
@@ -352,16 +441,14 @@
 
                 holidays.forEach(holiday => {
                     if (holiday.start === holiday.end) return;
-
                     const start = new Date(holiday.start + 'T00:00:00');
                     const end = new Date(holiday.end + 'T00:00:00');
-                    
                     let currentDate = new Date(start);
+
                     while (currentDate <= end) {
                         if (currentDate.getFullYear() === year && currentDate.getMonth() === month) {
                             const weekStart = new Date(currentDate);
                             weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-                            
                             const weekEnd = new Date(weekStart);
                             weekEnd.setDate(weekEnd.getDate() + 6);
 
@@ -390,47 +477,107 @@
             }
 
             function addEventListenersToCards() {
-                scheduleList.querySelectorAll('input[type="file"]').forEach(input => {
-                    input.addEventListener('change', (event) => {
-                        const fileStatus = event.target.previousElementSibling.previousElementSibling;
-                        if (event.target.files.length > 0) {
-                            const fileName = event.target.files[0].name;
-                            fileStatus.textContent = `PPT: ${fileName}`;
-                            fileStatus.title = fileName; 
-                            fileStatus.classList.remove('text-gray-500');
-                            fileStatus.classList.add('text-green-700', 'font-medium');
-                        }
-                    });
+                scheduleList.querySelectorAll('.title-input').forEach(input => {
+                    input.addEventListener('blur', handleTitleUpdate);
                 });
-
+                scheduleList.querySelectorAll('.upload-input').forEach(input => {
+                    input.addEventListener('change', handleFileUpload);
+                });
+                scheduleList.querySelectorAll('.delete-file-btn').forEach(button => {
+                    button.addEventListener('click', handleFileDelete);
+                });
                 scheduleList.querySelectorAll('.generate-email-btn').forEach(button => {
-                    button.addEventListener('click', (event) => {
-                        if (!isAdminUnlocked) return;
-
-                        const id = event.currentTarget.dataset.id;
-                        const scheduleData = allSchedules[currentSemesterKey].data;
-                        const cardData = scheduleData.find(item => item.id == id);
-                        const titleInput = document.getElementById(`title-input-${id}`);
-                        const title = titleInput.value;
-
-                        if (!title) {
-                            titleInput.classList.add('border-red-500', 'placeholder-red-500');
-                            titleInput.placeholder = "请先填写标题！";
-                            setTimeout(() => {
-                                titleInput.classList.remove('border-red-500', 'placeholder-red-500');
-                                titleInput.placeholder = "输入本次组会标题...";
-                            }, 3000);
-                            return;
-                        }
-
-                        const recipients = participants.map(p => p.email).join(',');
-                        const subject = `组会通知: ${cardData.date} - ${title}`;
-                        const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n期待您的参与！\n\n此致`;
-                        
-                        const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-                        window.location.href = mailtoLink;
-                    });
+                    button.addEventListener('click', handleEmailGeneration);
                 });
+            }
+
+            async function handleTitleUpdate(event) {
+                const meetingId = event.target.dataset.id;
+                const newTitle = event.target.value;
+                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                await setDoc(docRef, { title: newTitle }, { merge: true });
+            }
+
+            function handleFileUpload(event) {
+                const meetingId = event.target.dataset.id;
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const storageRef = ref(storage, `${currentSemesterKey}/${meetingId}/${file.name}`);
+                const uploadTask = uploadBytesResumable(storageRef, file);
+
+                const progressContainer = document.getElementById(`progress-container-${meetingId}`);
+                const progressBar = document.getElementById(`progress-bar-${meetingId}`);
+                progressContainer.style.display = 'block';
+
+                uploadTask.on('state_changed', 
+                    (snapshot) => {
+                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                        progressBar.style.width = progress + '%';
+                    }, 
+                    (error) => {
+                        console.error("Upload failed:", error);
+                        alert("上传失败，请稍后再试。");
+                        progressContainer.style.display = 'none';
+                    }, 
+                    async () => {
+                        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                        const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                        await updateDoc(docRef, {
+                            fileURL: downloadURL,
+                            fileName: file.name,
+                            uploaderUid: currentUser.uid
+                        });
+                    }
+                );
+            }
+
+            async function handleFileDelete(event) {
+                const meetingId = event.target.dataset.id;
+                const scheduleData = firestoreData[currentSemesterKey] || [];
+                const meeting = scheduleData.find(m => m.id === meetingId);
+
+                if (!meeting || !meeting.fileName) return;
+                if (!confirm(`确定要删除文件 "${meeting.fileName}" 吗？`)) return;
+
+                const fileRef = ref(storage, `${currentSemesterKey}/${meetingId}/${meeting.fileName}`);
+                try {
+                    await deleteObject(fileRef);
+                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                    await updateDoc(docRef, {
+                        fileURL: null,
+                        fileName: null,
+                        uploaderUid: null
+                    });
+                } catch (error) {
+                    console.error("File deletion failed:", error);
+                    alert("文件删除失败，请稍后再试。");
+                }
+            }
+
+            function handleEmailGeneration(event) {
+                if (!isAdminUnlocked) return;
+                const id = event.currentTarget.dataset.id;
+                const scheduleData = firestoreData[currentSemesterKey] || [];
+                const cardData = scheduleData.find(item => item.id == id);
+                const titleInput = document.getElementById(`title-input-${id}`);
+                const title = titleInput.value;
+
+                if (!title) {
+                    titleInput.classList.add('border-red-500', 'placeholder-red-500');
+                    titleInput.placeholder = "请先填写标题！";
+                    setTimeout(() => {
+                        titleInput.classList.remove('border-red-500', 'placeholder-red-500');
+                        titleInput.placeholder = "输入本次组会标题...";
+                    }, 3000);
+                    return;
+                }
+
+                const recipients = participants.map(p => p.email).join(',');
+                const subject = `组会通知: ${cardData.date} - ${title}`;
+                const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n期待您的参与！\n\n此致`;
+                const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+                window.location.href = mailtoLink;
             }
             
             function updateAdminControls() {
@@ -457,69 +604,75 @@
                 document.getElementById('totalPresenters').textContent = totalPresenters;
             }
 
-            function applyFilters() {
-                const scheduleData = allSchedules[currentSemesterKey].data;
-                const selectedPresenter = presenterFilter.value;
-                const filteredData = scheduleData.filter(item => {
-                    return selectedPresenter === 'all' || item.presenter === selectedPresenter;
+            function populateFilters(scheduleData) {
+                presenterFilter.innerHTML = '<option value="all">所有主讲人</option>';
+                const presenters = [...new Set(scheduleData.map(item => item.presenter))].sort();
+                presenters.forEach(presenter => {
+                    const option = document.createElement('option');
+                    option.value = presenter;
+                    option.textContent = presenter;
+                    presenterFilter.appendChild(option);
                 });
-                renderSchedule(filteredData);
+            }
+            
+            function attachGlobalEventListeners() {
+                semesterSelector.addEventListener('change', (e) => listenToSemesterData(e.target.value));
+                presenterFilter.addEventListener('change', applyFilters);
+                resetFiltersBtn.addEventListener('click', () => {
+                    presenterFilter.value = 'all';
+                    applyFilters();
+                });
+
+                unlockAdminBtn.addEventListener('click', () => {
+                    if (isAdminUnlocked) {
+                        isAdminUnlocked = false;
+                    } else {
+                        if (adminPasswordInput.value === ADMIN_PASSWORD) {
+                            isAdminUnlocked = true;
+                            adminPasswordInput.classList.remove('border-red-500');
+                        } else {
+                            adminPasswordInput.classList.add('border-red-500');
+                            setTimeout(() => adminPasswordInput.classList.remove('border-red-500'), 2000);
+                        }
+                    }
+                    updateAdminControls();
+                });
+
+                prevMonthBtn.addEventListener('click', () => {
+                    calendarDate.setMonth(calendarDate.getMonth() - 1);
+                    renderCalendar();
+                });
+                nextMonthBtn.addEventListener('click', () => {
+                    calendarDate.setMonth(calendarDate.getMonth() + 1);
+                    renderCalendar();
+                });
+
+                calendarGrid.addEventListener('click', (e) => {
+                    const target = e.target.closest('.has-meeting');
+                    if (target) {
+                        const meetingId = target.dataset.meetingId;
+                        const card = document.getElementById(`card-${meetingId}`);
+                        if (card) {
+                            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            card.classList.add('highlight-card');
+                            setTimeout(() => card.classList.remove('highlight-card'), 1500);
+                        }
+                    }
+                });
             }
 
-            semesterSelector.addEventListener('change', (e) => {
-                initializeAppForSemester(e.target.value);
-            });
-            
-            presenterFilter.addEventListener('change', applyFilters);
-            resetFiltersBtn.addEventListener('click', () => {
-                presenterFilter.value = 'all';
-                applyFilters();
-            });
-
-            unlockAdminBtn.addEventListener('click', () => {
-                if (isAdminUnlocked) {
-                    isAdminUnlocked = false;
+            onAuthStateChanged(auth, user => {
+                if (user) {
+                    startApp(user);
                 } else {
-                    if (adminPasswordInput.value === ADMIN_PASSWORD) {
-                        isAdminUnlocked = true;
-                        adminPasswordInput.classList.remove('border-red-500');
-                    } else {
-                        adminPasswordInput.classList.add('border-red-500');
-                        setTimeout(() => {
-                            adminPasswordInput.classList.remove('border-red-500');
-                        }, 2000);
-                    }
-                }
-                updateAdminControls();
-            });
-
-            prevMonthBtn.addEventListener('click', () => {
-                calendarDate.setMonth(calendarDate.getMonth() - 1);
-                renderCalendar();
-            });
-
-            nextMonthBtn.addEventListener('click', () => {
-                calendarDate.setMonth(calendarDate.getMonth() + 1);
-                renderCalendar();
-            });
-
-            calendarGrid.addEventListener('click', (e) => {
-                if (e.target.classList.contains('has-meeting')) {
-                    const meetingId = e.target.dataset.meetingId;
-                    const card = document.getElementById(`card-${meetingId}`);
-                    if (card) {
-                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        card.classList.add('highlight-card');
-                        setTimeout(() => {
-                            card.classList.remove('highlight-card');
-                        }, 1500);
-                    }
+                    signInAnonymously(auth).catch(error => {
+                        console.error("Anonymous sign-in failed:", error);
+                        loadingOverlay.innerHTML = '<p class="text-lg font-semibold text-red-700">认证失败，请检查网络连接或Firebase配置。</p>';
+                    });
                 }
             });
-
-            populateSemesterSelector();
-            initializeAppForSemester(currentSemesterKey);
         });
     </script>
 </body>
 </html>
+
