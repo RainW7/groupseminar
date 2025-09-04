@@ -33,6 +33,10 @@
             cursor: not-allowed;
             opacity: 0.7;
         }
+        .title-textarea:disabled {
+            background-color: #f3f4f6;
+            cursor: not-allowed;
+        }
         .delete-file-btn:disabled {
             color: #9ca3af;
             cursor: not-allowed;
@@ -151,7 +155,7 @@
                 </div>
                 <div id="admin-section" class="mt-8 pt-4 border-t">
                     <h3 class="text-lg font-bold mb-3 text-gray-700">管理员功能</h3>
-                    <p class="text-xs text-gray-500 mb-2">解锁后可使用邮件通知功能</p>
+                    <p class="text-xs text-gray-500 mb-2">解锁后可编辑标题、删除文件及发送邮件</p>
                     <div class="space-y-2">
                         <input type="password" id="adminPassword" placeholder="输入密码..." class="w-full p-2 border border-gray-300 rounded-lg bg-gray-50 text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500 transition">
                         <button id="unlockAdminBtn" class="w-full bg-gray-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-600 transition">
@@ -186,7 +190,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch, deleteField } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
         const allSchedules = {
@@ -235,7 +239,472 @@
 
         const ADMIN_PASSWORD = 'galaxies';
 
+        // --- Global Variables ---
+        let app, auth, db, storage;
+        let semesterSelector, presenterFilter, resetFiltersBtn, scheduleList, adminPasswordInput, unlockAdminBtn, calendarGrid, calendarTitle, prevMonthBtn, nextMonthBtn, loadingOverlay;
+        let currentUser = null;
+        let isAdminUnlocked = false;
+        let currentSemesterKey = Object.keys(allSchedules)[0];
+        let calendarDate = new Date();
+        let firestoreData = {};
+        let unsubscribe = null;
+
+        function initializeElements() {
+            semesterSelector = document.getElementById('semesterSelector');
+            presenterFilter = document.getElementById('presenterFilter');
+            resetFiltersBtn = document.getElementById('resetFilters');
+            scheduleList = document.getElementById('scheduleList');
+            adminPasswordInput = document.getElementById('adminPassword');
+            unlockAdminBtn = document.getElementById('unlockAdminBtn');
+            calendarGrid = document.getElementById('calendarGrid');
+            calendarTitle = document.getElementById('calendarTitle');
+            prevMonthBtn = document.getElementById('prevMonthBtn');
+            nextMonthBtn = document.getElementById('nextMonthBtn');
+            loadingOverlay = document.getElementById('loading-overlay');
+        }
+
+        function startApp(user) {
+            currentUser = user;
+            console.log("Authenticated anonymously:", currentUser.uid);
+            populateSemesterSelector();
+            listenToSemesterData(currentSemesterKey);
+            attachGlobalEventListeners();
+            loadingOverlay.style.display = 'none';
+        }
+
+        function populateSemesterSelector() {
+            for (const key in allSchedules) {
+                const option = document.createElement('option');
+                option.value = key;
+                option.textContent = allSchedules[key].name;
+                semesterSelector.appendChild(option);
+            }
+        }
+
+        function listenToSemesterData(semesterKey) {
+            if (unsubscribe) unsubscribe(); 
+
+            currentSemesterKey = semesterKey;
+            const meetingsCol = collection(db, "semesters", semesterKey, "meetings");
+            
+            unsubscribe = onSnapshot(meetingsCol, (snapshot) => {
+                const meetings = [];
+                snapshot.forEach(doc => {
+                    meetings.push({ id: doc.id, ...doc.data() });
+                });
+                
+                if (meetings.length === 0 && allSchedules[semesterKey]) {
+                    seedInitialData(semesterKey);
+                    return;
+                }
+
+                meetings.sort((a, b) => new Date(a.date) - new Date(b.date));
+                firestoreData[semesterKey] = meetings;
+                
+                populateFilters(meetings);
+                applyFilters();
+                updateStats(meetings);
+                renderCalendar();
+            }, (error) => {
+                console.error("Error listening to semester data:", error);
+                loadingOverlay.innerHTML = `<p class="text-lg font-semibold text-red-700">无法加载数据，请检查Firebase规则或网络连接。</p>`;
+            });
+        }
+
+        async function seedInitialData(semesterKey) {
+            console.log(`No data for ${semesterKey}, seeding from local source...`);
+            const localData = allSchedules[semesterKey].data;
+            const batch = writeBatch(db);
+            localData.forEach(meeting => {
+                const docRef = doc(db, "semesters", semesterKey, "meetings", String(meeting.id));
+                batch.set(docRef, meeting);
+            });
+            await batch.commit();
+        }
+
+        function applyFilters() {
+            const scheduleData = firestoreData[currentSemesterKey] || [];
+            const selectedPresenter = presenterFilter.value;
+            const filteredData = scheduleData.filter(item => {
+                return selectedPresenter === 'all' || item.presenter === selectedPresenter;
+            });
+            renderSchedule(filteredData);
+        }
+
+        function renderSchedule(data) {
+            scheduleList.innerHTML = '';
+            if (data.length === 0) {
+                scheduleList.innerHTML = '<p class="col-span-full text-center text-gray-500">没有找到匹配的安排。</p>';
+                return;
+            }
+            data.forEach(item => {
+                const card = document.createElement('div');
+                card.id = `card-${item.id}`;
+                card.className = `p-4 rounded-lg shadow-md transition-all duration-300 border-l-4 border-amber-500 bg-amber-50/50 flex flex-col justify-between`;
+                
+                const presenterInfo = participants.find(p => p.name === item.presenter);
+                const presenterHTML = presenterInfo && presenterInfo.url !== '#'
+                    ? `<a href="${presenterInfo.url}" target="_blank" rel="noopener noreferrer" class="text-2xl font-bold text-blue-600 mt-1 hover:underline">${item.presenter}</a>`
+                    : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
+                
+                let deleteButtonHTML = '';
+                if (item.fileURL && currentUser && item.uploaderUid === currentUser.uid) {
+                    deleteButtonHTML = `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>`;
+                }
+
+                const fileHTML = item.fileURL
+                    ? `
+                        <div class="flex items-center justify-between">
+                            <a href="${item.fileURL}" target="_blank" class="text-sm text-green-700 font-medium truncate hover:underline" title="${item.fileName}">PPT: ${item.fileName}</a>
+                            ${deleteButtonHTML}
+                        </div>
+                    `
+                    : `
+                        <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
+                        <div id="progress-container-${item.id}" class="hidden my-2">
+                            <div class="progress-bar"><div id="progress-bar-${item.id}" class="progress-bar-inner"></div></div>
+                        </div>
+                        <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
+                            选择文件
+                        </label>
+                        <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
+                    `;
+
+                card.innerHTML = `
+                    <div>
+                        <p class="text-sm text-gray-500">${item.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}</p>
+                        ${presenterHTML}
+                    </div>
+                    <div class="mt-4 pt-4 border-t border-amber-200/80 space-y-3">
+                        <div>
+                            <label for="title-input-${item.id}" class="text-sm text-gray-600 font-medium">组会标题:</label>
+                            <textarea id="title-input-${item.id}" data-id="${item.id}" rows="2" placeholder="解锁后可编辑..." class="title-textarea mt-1 w-full p-1.5 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500 disabled:bg-gray-100 disabled:cursor-not-allowed" disabled>${item.title || ''}</textarea>
+                        </div>
+                        <div id="file-section-${item.id}">
+                            ${fileHTML}
+                        </div>
+                        <button data-id="${item.id}" class="generate-email-btn admin-control w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
+                            ✉️ 发送邮件通知
+                        </button>
+                    </div>
+                `;
+                scheduleList.appendChild(card);
+            });
+            addEventListenersToCards();
+            updateAdminControls();
+        }
+
+        function renderCalendar() {
+            calendarGrid.innerHTML = '';
+            const year = calendarDate.getFullYear();
+            const month = calendarDate.getMonth();
+            calendarTitle.textContent = `${year}年 ${month + 1}月`;
+
+            const firstDayOfMonth = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const scheduleData = firestoreData[currentSemesterKey] || [];
+            const dayElements = [];
+            
+            const today = new Date();
+            const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+            for (let i = 0; i < firstDayOfMonth; i++) {
+                const emptyCell = document.createElement('div');
+                calendarGrid.appendChild(emptyCell);
+            }
+
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayCell = document.createElement('div');
+                dayCell.textContent = day;
+                dayCell.className = 'calendar-day h-10 flex items-center justify-center z-10';
+                const currentDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                dayCell.dataset.date = currentDateStr;
+
+                if (currentDateStr === todayStr) {
+                    dayCell.classList.add('is-today');
+                }
+                
+                const meeting = scheduleData.find(m => m.date === currentDateStr);
+                if (meeting) {
+                    dayCell.classList.add('has-meeting', 'clickable');
+                    dayCell.dataset.meetingId = meeting.id;
+                }
+                
+                const isHoliday = holidays.some(h => {
+                    const start = new Date(h.start + 'T00:00:00');
+                    const end = new Date(h.end + 'T00:00:00');
+                    const current = new Date(currentDateStr + 'T00:00:00');
+                    return current >= start && current <= end;
+                });
+
+                if(isHoliday) dayCell.classList.add('is-holiday');
+
+                const isWorkday = adjustedWorkdays.some(d => d.date === currentDateStr);
+                if (isWorkday) dayCell.classList.add('is-workday');
+
+                calendarGrid.appendChild(dayCell);
+                dayElements.push(dayCell);
+            }
+            
+            renderHolidayBars(year, month, dayElements);
+        }
+        
+        function renderHolidayBars(year, month, dayElements) {
+             if (dayElements.length === 0) return;
+            const dayWidth = calendarGrid.offsetWidth / 7;
+            const dayHeight = dayElements[0].offsetHeight;
+
+            holidays.forEach(holiday => {
+                if (holiday.start === holiday.end) return;
+                const start = new Date(holiday.start + 'T00:00:00');
+                const end = new Date(holiday.end + 'T00:00:00');
+                let currentDate = new Date(start);
+
+                while (currentDate <= end) {
+                    if (currentDate.getFullYear() === year && currentDate.getMonth() === month) {
+                        const weekStart = new Date(currentDate);
+                        weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+                        const weekEnd = new Date(weekStart);
+                        weekEnd.setDate(weekEnd.getDate() + 6);
+
+                        const barStart = new Date(Math.max(start, weekStart));
+                        const barEnd = new Date(Math.min(end, weekEnd));
+
+                        const startDayElem = dayElements.find(el => el.dataset.date === barStart.toISOString().split('T')[0]);
+                        if (startDayElem) {
+                            const startIndex = Array.from(calendarGrid.children).indexOf(startDayElem);
+                            const startRow = Math.floor(startIndex / 7);
+                            const startCol = barStart.getDay();
+                            const duration = (barEnd.getTime() - barStart.getTime()) / (1000 * 3600 * 24) + 1;
+                            
+                            const bar = document.createElement('div');
+                            bar.className = 'holiday-bar';
+                            bar.textContent = holiday.name;
+                            bar.style.top = `${startRow * dayHeight + (dayHeight - 36) / 2}px`;
+                            bar.style.left = `${startCol * dayWidth + 4}px`;
+                            bar.style.width = `${duration * dayWidth - 8}px`;
+                            calendarGrid.appendChild(bar);
+                        }
+                    }
+                    currentDate.setDate(currentDate.getDate() + 7 - currentDate.getDay());
+                }
+            });
+        }
+
+        function addEventListenersToCards() {
+            scheduleList.querySelectorAll('.title-textarea').forEach(input => {
+                input.addEventListener('blur', handleTitleUpdate);
+            });
+            scheduleList.querySelectorAll('.upload-input').forEach(input => {
+                input.addEventListener('change', handleFileUpload);
+            });
+            scheduleList.querySelectorAll('.delete-file-btn').forEach(button => {
+                button.addEventListener('click', handleFileDelete);
+            });
+            scheduleList.querySelectorAll('.generate-email-btn').forEach(button => {
+                button.addEventListener('click', handleEmailGeneration);
+            });
+        }
+
+        async function handleTitleUpdate(event) {
+            if (isAdminUnlocked) {
+                const meetingId = event.target.dataset.id;
+                const newTitle = event.target.value;
+                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                await setDoc(docRef, { title: newTitle }, { merge: true });
+            }
+        }
+
+        function handleFileUpload(event) {
+            const meetingId = event.target.dataset.id;
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const storageRef = ref(storage, `${currentSemesterKey}/${meetingId}/${file.name}`);
+            const uploadTask = uploadBytesResumable(storageRef, file);
+
+            const progressContainer = document.getElementById(`progress-container-${meetingId}`);
+            const progressBar = document.getElementById(`progress-bar-${meetingId}`);
+            progressContainer.style.display = 'block';
+
+            uploadTask.on('state_changed', 
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    progressBar.style.width = progress + '%';
+                }, 
+                (error) => {
+                    console.error("Upload failed:", error);
+                    alert("上传失败，请稍后再试。");
+                    progressContainer.style.display = 'none';
+                }, 
+                async () => {
+                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                    await updateDoc(docRef, {
+                        fileURL: downloadURL,
+                        fileName: file.name,
+                        uploaderUid: currentUser.uid
+                    });
+                }
+            );
+        }
+
+        async function handleFileDelete(event) {
+            if (!isAdminUnlocked) return;
+            const meetingId = event.target.dataset.id;
+            const scheduleData = firestoreData[currentSemesterKey] || [];
+            const meeting = scheduleData.find(m => m.id === meetingId);
+
+            if (!meeting || !meeting.fileName) return;
+            if (!confirm(`确定要删除文件 "${meeting.fileName}" 吗？`)) return;
+
+            const fileRef = ref(storage, `${currentSemesterKey}/${meetingId}/${meeting.fileName}`);
+            try {
+                await deleteObject(fileRef);
+                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                await updateDoc(docRef, {
+                    fileURL: deleteField(),
+                    fileName: deleteField(),
+                    uploaderUid: deleteField()
+                });
+            } catch (error) {
+                console.error("File deletion failed:", error);
+                 if (error.code === 'storage/object-not-found') {
+                    // If file doesn't exist in storage, just clean up the database entry.
+                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                    await updateDoc(docRef, {
+                        fileURL: deleteField(),
+                        fileName: deleteField(),
+                        uploaderUid: deleteField()
+                    });
+                    alert("文件已在存储中被删除，现已清理数据库记录。");
+                } else {
+                    alert("文件删除失败，请稍后再试。");
+                }
+            }
+        }
+
+        function handleEmailGeneration(event) {
+            if (!isAdminUnlocked) return;
+            const id = event.currentTarget.dataset.id;
+            const scheduleData = firestoreData[currentSemesterKey] || [];
+            const cardData = scheduleData.find(item => item.id == id);
+            const titleInput = document.getElementById(`title-input-${id}`);
+            const title = titleInput.value;
+
+            if (!title) {
+                titleInput.classList.add('border-red-500', 'placeholder-red-500');
+                titleInput.placeholder = "请先填写标题！";
+                setTimeout(() => {
+                    titleInput.classList.remove('border-red-500', 'placeholder-red-500');
+                    titleInput.placeholder = "输入本次组会标题...";
+                }, 3000);
+                return;
+            }
+
+            const recipients = participants.map(p => p.email).join(',');
+            const subject = `组会通知: ${cardData.date} - ${title}`;
+            const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n期待您的参与！\n\n此致`;
+            const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+            window.location.href = mailtoLink;
+        }
+        
+        function updateAdminControls() {
+            const emailButtons = document.querySelectorAll('.generate-email-btn');
+            const deleteButtons = document.querySelectorAll('.delete-file-btn');
+            const titleTextareas = document.querySelectorAll('.title-textarea');
+
+            if (isAdminUnlocked) {
+                emailButtons.forEach(btn => btn.disabled = false);
+                deleteButtons.forEach(btn => btn.disabled = false);
+                titleTextareas.forEach(ta => ta.disabled = false);
+
+                unlockAdminBtn.textContent = '已解锁 (点击锁定)';
+                unlockAdminBtn.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                unlockAdminBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+                adminPasswordInput.disabled = true;
+            } else {
+                emailButtons.forEach(btn => btn.disabled = true);
+                deleteButtons.forEach(btn => btn.disabled = true);
+                titleTextareas.forEach(ta => ta.disabled = true);
+
+                unlockAdminBtn.textContent = '解锁';
+                unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
+                unlockAdminBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+                adminPasswordInput.disabled = false;
+                adminPasswordInput.value = '';
+            }
+        }
+        
+        function updateStats(scheduleData) {
+            document.getElementById('totalMeetings').textContent = scheduleData.length;
+            const totalPresenters = new Set(scheduleData.map(item => item.presenter)).size;
+            document.getElementById('totalPresenters').textContent = totalPresenters;
+        }
+
+        function populateFilters(scheduleData) {
+            const currentVal = presenterFilter.value;
+            presenterFilter.innerHTML = '<option value="all">所有主讲人</option>';
+            const presenters = [...new Set(scheduleData.map(item => item.presenter))].sort();
+            presenters.forEach(presenter => {
+                const option = document.createElement('option');
+                option.value = presenter;
+                option.textContent = presenter;
+                if(presenter === currentVal) option.selected = true;
+                presenterFilter.appendChild(option);
+            });
+        }
+        
+        function attachGlobalEventListeners() {
+            semesterSelector.addEventListener('change', (e) => listenToSemesterData(e.target.value));
+            presenterFilter.addEventListener('change', applyFilters);
+            resetFiltersBtn.addEventListener('click', () => {
+                presenterFilter.value = 'all';
+                applyFilters();
+            });
+
+            unlockAdminBtn.addEventListener('click', () => {
+                if (isAdminUnlocked) {
+                    isAdminUnlocked = false;
+                } else {
+                    if (adminPasswordInput.value === ADMIN_PASSWORD) {
+                        isAdminUnlocked = true;
+                        adminPasswordInput.classList.remove('border-red-500');
+                    } else {
+                        adminPasswordInput.classList.add('border-red-500');
+                        setTimeout(() => adminPasswordInput.classList.remove('border-red-500'), 2000);
+                    }
+                }
+                updateAdminControls();
+            });
+
+            prevMonthBtn.addEventListener('click', () => {
+                calendarDate.setMonth(calendarDate.getMonth() - 1);
+                renderCalendar();
+            });
+            nextMonthBtn.addEventListener('click', () => {
+                calendarDate.setMonth(calendarDate.getMonth() + 1);
+                renderCalendar();
+            });
+
+            calendarGrid.addEventListener('click', (e) => {
+                const target = e.target.closest('.has-meeting');
+                if (target) {
+                    const meetingId = target.dataset.meetingId;
+                    const card = document.getElementById(`card-${meetingId}`);
+                    if (card) {
+                        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        card.classList.add('highlight-card');
+                        setTimeout(() => card.classList.remove('highlight-card'), 1500);
+                    }
+                }
+            });
+        }
+
+        // --- Main App Initialization ---
         document.addEventListener('DOMContentLoaded', () => {
+            initializeElements();
+            
             const firebaseConfig = typeof __firebase_config !== 'undefined' 
                 ? JSON.parse(__firebase_config) 
                 : {
@@ -247,444 +716,15 @@
                     appId: "1:97868292703:web:bc1cf080ef600ef6a171ea",
                     measurementId: "G-XWWW57GQYZ"
                   };
-
-            const app = initializeApp(firebaseConfig);
-            const auth = getAuth(app);
-            const db = getFirestore(app);
-            const storage = getStorage(app);
             
-            const semesterSelector = document.getElementById('semesterSelector');
-            const presenterFilter = document.getElementById('presenterFilter');
-            const resetFiltersBtn = document.getElementById('resetFilters');
-            const scheduleList = document.getElementById('scheduleList');
-            const adminPasswordInput = document.getElementById('adminPassword');
-            const unlockAdminBtn = document.getElementById('unlockAdminBtn');
-            const calendarGrid = document.getElementById('calendarGrid');
-            const calendarTitle = document.getElementById('calendarTitle');
-            const prevMonthBtn = document.getElementById('prevMonthBtn');
-            const nextMonthBtn = document.getElementById('nextMonthBtn');
-            const loadingOverlay = document.getElementById('loading-overlay');
-
-            let currentUser = null;
-            let isAdminUnlocked = false;
-            let currentSemesterKey = Object.keys(allSchedules)[0];
-            let calendarDate = new Date(); // Set to current date on load
-            let firestoreData = {};
-            let unsubscribe = null;
-
-            function startApp(user) {
-                currentUser = user;
-                console.log("Authenticated anonymously:", currentUser.uid);
-                populateSemesterSelector();
-                listenToSemesterData(currentSemesterKey);
-                attachGlobalEventListeners();
-                loadingOverlay.style.display = 'none';
-            }
-
-            function populateSemesterSelector() {
-                for (const key in allSchedules) {
-                    const option = document.createElement('option');
-                    option.value = key;
-                    option.textContent = allSchedules[key].name;
-                    semesterSelector.appendChild(option);
-                }
-            }
-
-            function listenToSemesterData(semesterKey) {
-                if (unsubscribe) unsubscribe(); 
-
-                currentSemesterKey = semesterKey;
-                const meetingsCol = collection(db, "semesters", semesterKey, "meetings");
-                
-                unsubscribe = onSnapshot(meetingsCol, (snapshot) => {
-                    const meetings = [];
-                    snapshot.forEach(doc => {
-                        meetings.push({ id: doc.id, ...doc.data() });
-                    });
-                    
-                    if (meetings.length === 0 && allSchedules[semesterKey]) {
-                        seedInitialData(semesterKey);
-                        return;
-                    }
-
-                    meetings.sort((a, b) => new Date(a.date) - new Date(b.date));
-                    firestoreData[semesterKey] = meetings;
-                    
-                    populateFilters(meetings);
-                    applyFilters();
-                    updateStats(meetings);
-                    renderCalendar();
-                });
-            }
-
-            async function seedInitialData(semesterKey) {
-                console.log(`No data for ${semesterKey}, seeding from local source...`);
-                const localData = allSchedules[semesterKey].data;
-                const batch = writeBatch(db);
-                localData.forEach(meeting => {
-                    const docRef = doc(db, "semesters", semesterKey, "meetings", String(meeting.id));
-                    batch.set(docRef, meeting);
-                });
-                await batch.commit();
-            }
-
-            function applyFilters() {
-                const scheduleData = firestoreData[currentSemesterKey] || [];
-                const selectedPresenter = presenterFilter.value;
-                const filteredData = scheduleData.filter(item => {
-                    return selectedPresenter === 'all' || item.presenter === selectedPresenter;
-                });
-                renderSchedule(filteredData);
-            }
-
-            function renderSchedule(data) {
-                scheduleList.innerHTML = '';
-                if (data.length === 0) {
-                    scheduleList.innerHTML = '<p class="col-span-full text-center text-gray-500">没有找到匹配的安排。</p>';
-                    return;
-                }
-                data.forEach(item => {
-                    const card = document.createElement('div');
-                    card.id = `card-${item.id}`;
-                    card.className = `p-4 rounded-lg shadow-md transition-all duration-300 border-l-4 border-amber-500 bg-amber-50/50 flex flex-col justify-between`;
-                    
-                    const presenterInfo = participants.find(p => p.name === item.presenter);
-                    const presenterHTML = presenterInfo && presenterInfo.url !== '#'
-                        ? `<a href="${presenterInfo.url}" target="_blank" rel="noopener noreferrer" class="text-2xl font-bold text-blue-600 mt-1 hover:underline">${item.presenter}</a>`
-                        : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
-
-                    const fileHTML = item.fileURL
-                        ? `
-                            <div class="flex items-center justify-between">
-                                <a href="${item.fileURL}" target="_blank" class="text-sm text-green-700 font-medium truncate hover:underline" title="${item.fileName}">PPT: ${item.fileName}</a>
-                                <button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>
-                            </div>
-                        `
-                        : `
-                            <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
-                            <div id="progress-container-${item.id}" class="hidden my-2">
-                                <div class="progress-bar"><div id="progress-bar-${item.id}" class="progress-bar-inner"></div></div>
-                            </div>
-                            <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
-                                选择文件
-                            </label>
-                            <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
-                        `;
-
-                    card.innerHTML = `
-                        <div>
-                            <p class="text-sm text-gray-500">${item.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}</p>
-                            ${presenterHTML}
-                        </div>
-                        <div class="mt-4 pt-4 border-t border-amber-200/80 space-y-3">
-                            <div>
-                                <label for="title-input-${item.id}" class="text-sm text-gray-600 font-medium">组会标题:</label>
-                                <input type="text" id="title-input-${item.id}" data-id="${item.id}" value="${item.title || ''}" placeholder="输入并自动保存..." class="title-input mt-1 w-full p-1.5 border border-gray-300 rounded-md bg-white text-sm focus:ring-1 focus:ring-amber-500 focus:border-amber-500">
-                            </div>
-                            <div id="file-section-${item.id}">
-                                ${fileHTML}
-                            </div>
-                            <button data-id="${item.id}" class="generate-email-btn admin-control w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition flex items-center justify-center gap-2" disabled>
-                                ✉️ 发送邮件通知
-                            </button>
-                        </div>
-                    `;
-                    scheduleList.appendChild(card);
-                });
-                addEventListenersToCards();
-                updateAdminControls();
-            }
-
-            function renderCalendar() {
-                calendarGrid.innerHTML = '';
-                const year = calendarDate.getFullYear();
-                const month = calendarDate.getMonth();
-                calendarTitle.textContent = `${year}年 ${month + 1}月`;
-
-                const firstDayOfMonth = new Date(year, month, 1).getDay();
-                const daysInMonth = new Date(year, month + 1, 0).getDate();
-                const scheduleData = firestoreData[currentSemesterKey] || [];
-                const dayElements = [];
-                
-                const today = new Date();
-                const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-
-                for (let i = 0; i < firstDayOfMonth; i++) {
-                    const emptyCell = document.createElement('div');
-                    calendarGrid.appendChild(emptyCell);
-                }
-
-                for (let day = 1; day <= daysInMonth; day++) {
-                    const dayCell = document.createElement('div');
-                    dayCell.textContent = day;
-                    dayCell.className = 'calendar-day h-10 flex items-center justify-center z-10';
-                    const currentDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                    dayCell.dataset.date = currentDateStr;
-
-                    if (currentDateStr === todayStr) {
-                        dayCell.classList.add('is-today');
-                    }
-                    
-                    const meeting = scheduleData.find(m => m.date === currentDateStr);
-                    if (meeting) {
-                        dayCell.classList.add('has-meeting', 'clickable');
-                        dayCell.dataset.meetingId = meeting.id;
-                    }
-                    
-                    const isHoliday = holidays.some(h => {
-                        const start = new Date(h.start + 'T00:00:00');
-                        const end = new Date(h.end + 'T00:00:00');
-                        const current = new Date(currentDateStr + 'T00:00:00');
-                        return current >= start && current <= end;
-                    });
-
-                    if(isHoliday) dayCell.classList.add('is-holiday');
-
-                    const isWorkday = adjustedWorkdays.some(d => d.date === currentDateStr);
-                    if (isWorkday) dayCell.classList.add('is-workday');
-
-                    calendarGrid.appendChild(dayCell);
-                    dayElements.push(dayCell);
-                }
-                
-                renderHolidayBars(year, month, dayElements);
-            }
-            
-            function renderHolidayBars(year, month, dayElements) {
-                const dayWidth = calendarGrid.offsetWidth / 7;
-                const dayHeight = dayElements[0].offsetHeight;
-
-                holidays.forEach(holiday => {
-                    if (holiday.start === holiday.end) return;
-                    const start = new Date(holiday.start + 'T00:00:00');
-                    const end = new Date(holiday.end + 'T00:00:00');
-                    let currentDate = new Date(start);
-
-                    while (currentDate <= end) {
-                        if (currentDate.getFullYear() === year && currentDate.getMonth() === month) {
-                            const weekStart = new Date(currentDate);
-                            weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-                            const weekEnd = new Date(weekStart);
-                            weekEnd.setDate(weekEnd.getDate() + 6);
-
-                            const barStart = new Date(Math.max(start, weekStart));
-                            const barEnd = new Date(Math.min(end, weekEnd));
-
-                            const startDayElem = dayElements.find(el => el.dataset.date === barStart.toISOString().split('T')[0]);
-                            if (startDayElem) {
-                                const startIndex = Array.from(calendarGrid.children).indexOf(startDayElem);
-                                const startRow = Math.floor(startIndex / 7);
-                                const startCol = barStart.getDay();
-                                const duration = (barEnd.getTime() - barStart.getTime()) / (1000 * 3600 * 24) + 1;
-                                
-                                const bar = document.createElement('div');
-                                bar.className = 'holiday-bar';
-                                bar.textContent = holiday.name;
-                                bar.style.top = `${startRow * dayHeight + (dayHeight - 36) / 2}px`;
-                                bar.style.left = `${startCol * dayWidth + 4}px`;
-                                bar.style.width = `${duration * dayWidth - 8}px`;
-                                calendarGrid.appendChild(bar);
-                            }
-                        }
-                        currentDate.setDate(currentDate.getDate() + 7 - currentDate.getDay());
-                    }
-                });
-            }
-
-            function addEventListenersToCards() {
-                scheduleList.querySelectorAll('.title-input').forEach(input => {
-                    input.addEventListener('blur', handleTitleUpdate);
-                });
-                scheduleList.querySelectorAll('.upload-input').forEach(input => {
-                    input.addEventListener('change', handleFileUpload);
-                });
-                scheduleList.querySelectorAll('.delete-file-btn').forEach(button => {
-                    button.addEventListener('click', handleFileDelete);
-                });
-                scheduleList.querySelectorAll('.generate-email-btn').forEach(button => {
-                    button.addEventListener('click', handleEmailGeneration);
-                });
-            }
-
-            async function handleTitleUpdate(event) {
-                const meetingId = event.target.dataset.id;
-                const newTitle = event.target.value;
-                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                await setDoc(docRef, { title: newTitle }, { merge: true });
-            }
-
-            function handleFileUpload(event) {
-                const meetingId = event.target.dataset.id;
-                const file = event.target.files[0];
-                if (!file) return;
-
-                const storageRef = ref(storage, `${currentSemesterKey}/${meetingId}/${file.name}`);
-                const uploadTask = uploadBytesResumable(storageRef, file);
-
-                const progressContainer = document.getElementById(`progress-container-${meetingId}`);
-                const progressBar = document.getElementById(`progress-bar-${meetingId}`);
-                progressContainer.style.display = 'block';
-
-                uploadTask.on('state_changed', 
-                    (snapshot) => {
-                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                        progressBar.style.width = progress + '%';
-                    }, 
-                    (error) => {
-                        console.error("Upload failed:", error);
-                        alert("上传失败，请稍后再试。");
-                        progressContainer.style.display = 'none';
-                    }, 
-                    async () => {
-                        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                        const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                        await updateDoc(docRef, {
-                            fileURL: downloadURL,
-                            fileName: file.name,
-                            uploaderUid: currentUser.uid
-                        });
-                    }
-                );
-            }
-
-            async function handleFileDelete(event) {
-                if (!isAdminUnlocked) return;
-                const meetingId = event.target.dataset.id;
-                const scheduleData = firestoreData[currentSemesterKey] || [];
-                const meeting = scheduleData.find(m => m.id === meetingId);
-
-                if (!meeting || !meeting.fileName) return;
-                if (!confirm(`确定要删除文件 "${meeting.fileName}" 吗？`)) return;
-
-                const fileRef = ref(storage, `${currentSemesterKey}/${meetingId}/${meeting.fileName}`);
-                try {
-                    await deleteObject(fileRef);
-                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                    await updateDoc(docRef, {
-                        fileURL: null,
-                        fileName: null,
-                        uploaderUid: null
-                    });
-                } catch (error) {
-                    console.error("File deletion failed:", error);
-                    alert("文件删除失败，请稍后再试。");
-                }
-            }
-
-            function handleEmailGeneration(event) {
-                if (!isAdminUnlocked) return;
-                const id = event.currentTarget.dataset.id;
-                const scheduleData = firestoreData[currentSemesterKey] || [];
-                const cardData = scheduleData.find(item => item.id == id);
-                const titleInput = document.getElementById(`title-input-${id}`);
-                const title = titleInput.value;
-
-                if (!title) {
-                    titleInput.classList.add('border-red-500', 'placeholder-red-500');
-                    titleInput.placeholder = "请先填写标题！";
-                    setTimeout(() => {
-                        titleInput.classList.remove('border-red-500', 'placeholder-red-500');
-                        titleInput.placeholder = "输入本次组会标题...";
-                    }, 3000);
-                    return;
-                }
-
-                const recipients = participants.map(p => p.email).join(',');
-                const subject = `组会通知: ${cardData.date} - ${title}`;
-                const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n期待您的参与！\n\n此致`;
-                const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-                window.location.href = mailtoLink;
-            }
-            
-            function updateAdminControls() {
-                const emailButtons = document.querySelectorAll('.generate-email-btn');
-                const deleteButtons = document.querySelectorAll('.delete-file-btn');
-
-                if (isAdminUnlocked) {
-                    emailButtons.forEach(btn => btn.disabled = false);
-                    deleteButtons.forEach(btn => btn.disabled = false);
-                    unlockAdminBtn.textContent = '已解锁 (点击锁定)';
-                    unlockAdminBtn.classList.remove('bg-gray-500', 'hover:bg-gray-600');
-                    unlockAdminBtn.classList.add('bg-green-600', 'hover:bg-green-700');
-                    adminPasswordInput.disabled = true;
-                } else {
-                    emailButtons.forEach(btn => btn.disabled = true);
-                    deleteButtons.forEach(btn => btn.disabled = true);
-                    unlockAdminBtn.textContent = '解锁';
-                    unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
-                    unlockAdminBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
-                    adminPasswordInput.disabled = false;
-                    adminPasswordInput.value = '';
-                }
-            }
-            
-            function updateStats(scheduleData) {
-                document.getElementById('totalMeetings').textContent = scheduleData.length;
-                const totalPresenters = new Set(scheduleData.map(item => item.presenter)).size;
-                document.getElementById('totalPresenters').textContent = totalPresenters;
-            }
-
-            function populateFilters(scheduleData) {
-                presenterFilter.innerHTML = '<option value="all">所有主讲人</option>';
-                const presenters = [...new Set(scheduleData.map(item => item.presenter))].sort();
-                presenters.forEach(presenter => {
-                    const option = document.createElement('option');
-                    option.value = presenter;
-                    option.textContent = presenter;
-                    presenterFilter.appendChild(option);
-                });
-            }
-            
-            function attachGlobalEventListeners() {
-                semesterSelector.addEventListener('change', (e) => listenToSemesterData(e.target.value));
-                presenterFilter.addEventListener('change', applyFilters);
-                resetFiltersBtn.addEventListener('click', () => {
-                    presenterFilter.value = 'all';
-                    applyFilters();
-                });
-
-                unlockAdminBtn.addEventListener('click', () => {
-                    if (isAdminUnlocked) {
-                        isAdminUnlocked = false;
-                    } else {
-                        if (adminPasswordInput.value === ADMIN_PASSWORD) {
-                            isAdminUnlocked = true;
-                            adminPasswordInput.classList.remove('border-red-500');
-                        } else {
-                            adminPasswordInput.classList.add('border-red-500');
-                            setTimeout(() => adminPasswordInput.classList.remove('border-red-500'), 2000);
-                        }
-                    }
-                    updateAdminControls();
-                });
-
-                prevMonthBtn.addEventListener('click', () => {
-                    calendarDate.setMonth(calendarDate.getMonth() - 1);
-                    renderCalendar();
-                });
-                nextMonthBtn.addEventListener('click', () => {
-                    calendarDate.setMonth(calendarDate.getMonth() + 1);
-                    renderCalendar();
-                });
-
-                calendarGrid.addEventListener('click', (e) => {
-                    const target = e.target.closest('.has-meeting');
-                    if (target) {
-                        const meetingId = target.dataset.meetingId;
-                        const card = document.getElementById(`card-${meetingId}`);
-                        if (card) {
-                            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            card.classList.add('highlight-card');
-                            setTimeout(() => card.classList.remove('highlight-card'), 1500);
-                        }
-                    }
-                });
-            }
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+            storage = getStorage(app);
 
             onAuthStateChanged(auth, user => {
                 if (user) {
-                    if (!currentUser) { // Run only on initial authentication
+                    if (!currentUser) { 
                         startApp(user);
                     }
                 } else {
