@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>组会排班与计划</title>
+    <title>组会排班与计划 (Firebase版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -190,7 +190,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch, deleteField } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch, deleteField, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
         const allSchedules = {
@@ -263,10 +263,11 @@
             loadingOverlay = document.getElementById('loading-overlay');
         }
 
-        function startApp(user) {
+        async function startApp(user) {
             currentUser = user;
             console.log("Authenticated anonymously:", currentUser.uid);
             populateSemesterSelector();
+            await ensureDataSeeded(currentSemesterKey);
             listenToSemesterData(currentSemesterKey);
             attachGlobalEventListeners();
             loadingOverlay.style.display = 'none';
@@ -281,6 +282,21 @@
             }
         }
 
+        async function ensureDataSeeded(semesterKey) {
+            const meetingsCol = collection(db, "semesters", semesterKey, "meetings");
+            const snapshot = await getDocs(meetingsCol);
+            if (snapshot.empty && allSchedules[semesterKey]) {
+                console.log(`No data for ${semesterKey}, seeding from local source...`);
+                const localData = allSchedules[semesterKey].data;
+                const batch = writeBatch(db);
+                localData.forEach(meeting => {
+                    const docRef = doc(db, "semesters", semesterKey, "meetings", String(meeting.id));
+                    batch.set(docRef, meeting);
+                });
+                await batch.commit();
+            }
+        }
+
         function listenToSemesterData(semesterKey) {
             if (unsubscribe) unsubscribe(); 
 
@@ -292,11 +308,6 @@
                 snapshot.forEach(doc => {
                     meetings.push({ id: doc.id, ...doc.data() });
                 });
-                
-                if (meetings.length === 0 && allSchedules[semesterKey]) {
-                    seedInitialData(semesterKey);
-                    return;
-                }
 
                 meetings.sort((a, b) => new Date(a.date) - new Date(b.date));
                 firestoreData[semesterKey] = meetings;
@@ -311,16 +322,6 @@
             });
         }
 
-        async function seedInitialData(semesterKey) {
-            console.log(`No data for ${semesterKey}, seeding from local source...`);
-            const localData = allSchedules[semesterKey].data;
-            const batch = writeBatch(db);
-            localData.forEach(meeting => {
-                const docRef = doc(db, "semesters", semesterKey, "meetings", String(meeting.id));
-                batch.set(docRef, meeting);
-            });
-            await batch.commit();
-        }
 
         function applyFilters() {
             const scheduleData = firestoreData[currentSemesterKey] || [];
@@ -348,6 +349,7 @@
                     : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
                 
                 let deleteButtonHTML = '';
+                // Show delete button only if admin is unlocked AND the current user is the uploader
                 if (item.fileURL && currentUser && item.uploaderUid === currentUser.uid) {
                     deleteButtonHTML = `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>`;
                 }
@@ -369,9 +371,6 @@
                                 选择文件
                             </label>
                             <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
-                            <button data-id="${item.id}" class="add-link-btn admin-control text-xs flex-shrink-0 bg-gray-300 text-gray-800 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-400 transition" disabled>
-                                添加链接
-                            </button>
                         </div>
                     `;
 
@@ -495,12 +494,12 @@
             });
         }
         
-        async function handleTitleUpdate(event) {
+        function handleTitleUpdate(event) {
             if (isAdminUnlocked) {
                 const meetingId = event.target.dataset.id;
                 const newTitle = event.target.value;
                 const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                await setDoc(docRef, { title: newTitle }, { merge: true });
+                setDoc(docRef, { title: newTitle }, { merge: true });
             }
         }
 
@@ -571,34 +570,6 @@
                 }
             }
         }
-        
-        async function handleManualLink(button) {
-            if (!isAdminUnlocked) return;
-            const meetingId = button.dataset.id;
-            
-            const fileURL = prompt("请输入您已上传到Firebase Storage的文件的公开访问URL:");
-            if (!fileURL || !fileURL.startsWith('https')) {
-                alert("请输入一个有效的URL。");
-                return;
-            }
-
-            const fileName = prompt("请输入文件显示名称 (例如: meeting.pptx):", "presentation.pptx");
-            if (!fileName) return;
-
-            try {
-                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                await updateDoc(docRef, {
-                    fileURL: fileURL,
-                    fileName: fileName,
-                    uploaderUid: currentUser.uid
-                });
-                alert("链接添加成功！");
-            } catch (error) {
-                console.error("Failed to add link:", error);
-                alert("添加链接失败，请检查控制台错误信息。");
-            }
-        }
-
 
         function handleEmailGeneration(button) {
             if (!isAdminUnlocked) return;
@@ -629,13 +600,10 @@
             const emailButtons = document.querySelectorAll('.generate-email-btn');
             const deleteButtons = document.querySelectorAll('.delete-file-btn');
             const titleTextareas = document.querySelectorAll('.title-textarea');
-            const addLinkButtons = document.querySelectorAll('.add-link-btn');
-
 
             if (isAdminUnlocked) {
                 emailButtons.forEach(btn => btn.disabled = false);
                 titleTextareas.forEach(ta => ta.disabled = false);
-                addLinkButtons.forEach(btn => btn.disabled = false);
                 
                 deleteButtons.forEach(btn => {
                     const meetingId = btn.dataset.id;
@@ -655,7 +623,6 @@
                 emailButtons.forEach(btn => btn.disabled = true);
                 deleteButtons.forEach(btn => btn.disabled = true);
                 titleTextareas.forEach(ta => ta.disabled = true);
-                addLinkButtons.forEach(btn => btn.disabled = true);
 
                 unlockAdminBtn.textContent = '解锁';
                 unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
@@ -685,7 +652,12 @@
         }
         
         function attachGlobalEventListeners() {
-            semesterSelector.addEventListener('change', (e) => listenToSemesterData(e.target.value));
+            semesterSelector.addEventListener('change', (e) => {
+                const newSemesterKey = e.target.value;
+                ensureDataSeeded(newSemesterKey).then(() => {
+                    listenToSemesterData(newSemesterKey);
+                });
+            });
             presenterFilter.addEventListener('change', applyFilters);
             resetFiltersBtn.addEventListener('click', () => {
                 presenterFilter.value = 'all';
@@ -748,8 +720,6 @@
                     handleFileDelete(target);
                 } else if (target.matches('.generate-email-btn')) {
                     handleEmailGeneration(target);
-                } else if (target.matches('.add-link-btn')) {
-                    handleManualLink(target);
                 }
             });
         }
@@ -766,7 +736,7 @@
                     projectId: "xzz-s-seminar",
                     storageBucket: "xzz-s-seminar.appspot.com",
                     messagingSenderId: "97868292703",
-                    appId: "1:97868292703:web:bc1cf080ef600ef6a171ea",
+                    appId: "1:978682_rest_of_id",
                     measurementId: "G-XWWW57GQYZ"
                   };
             
