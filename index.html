@@ -191,7 +191,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch, deleteField, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import { getStorage, ref, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
         const allSchedules = {
             "2025-Fall": {
@@ -199,17 +199,16 @@
                 data: [
                     { id: 1, date: '2025-09-03', presenter: '文润' }, { id: 2, date: '2025-09-10', presenter: '吕宗飞' },
                     { id: 3, date: '2025-09-16', presenter: '张钰恒' }, { id: 4, date: '2025-09-23', presenter: '徐霄' },
-                    { id: 5, date: '2025-09-30', presenter: '彭昊' }, { id: 6, date: '2025-10-14', presenter: '刘爽' },
-                    { id: 7, date: '2025-10-21', presenter: '罗达' }, { id: 8, date: '2025-10-28', presenter: '师冬冬' },
-                    { id: 9, date: '2025-11-04', presenter: '杨超' }, { id: 10, date: '2025-11-11', presenter: '郑宪忠' },
-                    { id: 11, date: '2025-11-18', presenter: '文润' }, { id: 12, date: '2025-11-25', presenter: '彭昊' },
-                    { id: 13, date: '2025-12-02', presenter: '徐霄' }, { id: 14, date: '2025-12-09', presenter: '张钰恒' },
+                    { id: 5, date: '2025-09-30', presenter: '罗达' }, { id: 6, date: '2025-10-14', presenter: '刘爽' },
+                    { id: 7, date: '2025-10-21', presenter: '杨超' }, { id: 8, date: '2025-10-28', presenter: '师冬冬' },
+                    { id: 9, date: '2025-11-04', presenter: '乔曼' }, { id: 10, date: '2025-11-11', presenter: '郑宪忠' },
+                    { id: 11, date: '2025-11-18', presenter: '文润' }, { id: 12, date: '2025-11-25', presenter: '张钰恒' },
+                    { id: 13, date: '2025-12-02', presenter: '徐霄' }, { id: 14, date: '2025-12-09', presenter: '彭昊' },
                     { id: 15, date: '2025-12-16', presenter: '吕宗飞' }, { id: 16, date: '2025-12-23', presenter: '师冬冬' },
                     { id: 17, date: '2025-12-30', presenter: '杨超' }, { id: 18, date: '2026-01-06', presenter: '刘爽' },
-                    { id: 19, date: '2026-01-13', presenter: '文润' }, { id: 20, date: '2026-01-20', presenter: '彭昊' },
-                    { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '杨超' },
+                    { id: 19, date: '2026-01-13', presenter: '乔曼' }, { id: 20, date: '2026-01-20', presenter: '文润' },
+                    { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '彭昊' },
                     { id: 23, date: '2026-02-10', presenter: '郑宪忠' },
-                ]
             }
         };
         
@@ -229,12 +228,13 @@
             { name: '师冬冬', email: 'ddshi@aust.edu.cn', url: 'https://lxy.aust.edu.cn/info/1240/8997.htm' },
             { name: '杨超', email: 'yangchao@pmo.ac.cn', url: '#' },
             { name: '吕宗飞', email: 'zflv@pmo.ac.cn', url: '#' },
-            { name: '文润', email: 'wenrun1214@sjtu.edu.cn', url: '#' },
+            { name: '文润', email: 'wenrun1214@sjtu.edu.cn', url: 'https://tdli.sjtu.edu.cn/people/43059/run-wen' },
             { name: '彭昊', email: 'haopeng@pmo.ac.cn', url: '#' },
             { name: '张钰恒', email: 'yhzhang@pmo.ac.cn', url: '#' },
             { name: '徐霄', email: 'xiaoxu@pmo.ac.cn', url: '#' },
             { name: '刘爽', email: 'shuangliu@pmo.ac.cn', url: '#' },
-            { name: '罗达', email: 'daluo@pmo.ac.cn', url: '#' }
+            { name: '罗达', email: 'daluo@pmo.ac.cn', url: '#' },
+            { name: '乔曼', email: 'manqiao@pmo.ac.cn', url: '#' }
         ];
 
         const ADMIN_PASSWORD = 'galaxies';
@@ -349,7 +349,6 @@
                     : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
                 
                 let deleteButtonHTML = '';
-                // Show delete button only if admin is unlocked AND the current user is the uploader
                 if (item.fileURL && currentUser && item.uploaderUid === currentUser.uid) {
                     deleteButtonHTML = `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>`;
                 }
@@ -362,16 +361,10 @@
                         </div>
                     `
                     : `
-                        <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
-                        <div id="progress-container-${item.id}" class="hidden my-2">
-                            <div class="progress-bar"><div id="progress-bar-${item.id}" class="progress-bar-inner"></div></div>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <label for="file-upload-${item.id}" class="file-input-label flex-grow text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
-                                选择文件
-                            </label>
-                            <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
-                        </div>
+                        <p class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
+                        <button data-id="${item.id}" class="add-link-btn admin-control w-full text-xs bg-gray-300 text-gray-800 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-400 transition" disabled>
+                            + 手动添加链接
+                        </button>
                     `;
 
                 card.innerHTML = `
@@ -503,40 +496,6 @@
             }
         }
 
-        function handleFileUpload(event) {
-            const meetingId = event.target.dataset.id;
-            const file = event.target.files[0];
-            if (!file) return;
-
-            const storageRef = ref(storage, `${currentSemesterKey}/${meetingId}/${file.name}`);
-            const uploadTask = uploadBytesResumable(storageRef, file);
-
-            const progressContainer = document.getElementById(`progress-container-${meetingId}`);
-            const progressBar = document.getElementById(`progress-bar-${meetingId}`);
-            if (progressContainer) progressContainer.style.display = 'block';
-
-            uploadTask.on('state_changed', 
-                (snapshot) => {
-                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                    if (progressBar) progressBar.style.width = progress + '%';
-                }, 
-                (error) => {
-                    console.error("Upload failed:", error);
-                    alert("上传失败，请稍后再试。");
-                    if (progressContainer) progressContainer.style.display = 'none';
-                }, 
-                async () => {
-                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                    await updateDoc(docRef, {
-                        fileURL: downloadURL,
-                        fileName: file.name,
-                        uploaderUid: currentUser.uid
-                    });
-                }
-            );
-        }
-
         async function handleFileDelete(button) {
             if (!isAdminUnlocked) return;
             const meetingId = button.dataset.id;
@@ -570,6 +529,34 @@
                 }
             }
         }
+        
+        async function handleManualLink(button) {
+            if (!isAdminUnlocked) return;
+            const meetingId = button.dataset.id;
+            
+            const fileURL = prompt("请输入您已上传到Firebase Storage的文件的公开访问URL:");
+            if (!fileURL || !fileURL.startsWith('https')) {
+                alert("请输入一个有效的URL。");
+                return;
+            }
+
+            const fileName = prompt("请输入文件显示名称 (例如: meeting.pptx):", "presentation.pptx");
+            if (!fileName) return;
+
+            try {
+                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                await updateDoc(docRef, {
+                    fileURL: fileURL,
+                    fileName: fileName,
+                    uploaderUid: currentUser.uid
+                });
+                alert("链接添加成功！");
+            } catch (error) {
+                console.error("Failed to add link:", error);
+                alert("添加链接失败，请检查控制台错误信息。");
+            }
+        }
+
 
         function handleEmailGeneration(button) {
             if (!isAdminUnlocked) return;
@@ -600,10 +587,13 @@
             const emailButtons = document.querySelectorAll('.generate-email-btn');
             const deleteButtons = document.querySelectorAll('.delete-file-btn');
             const titleTextareas = document.querySelectorAll('.title-textarea');
+            const addLinkButtons = document.querySelectorAll('.add-link-btn');
+
 
             if (isAdminUnlocked) {
                 emailButtons.forEach(btn => btn.disabled = false);
                 titleTextareas.forEach(ta => ta.disabled = false);
+                addLinkButtons.forEach(btn => btn.disabled = false);
                 
                 deleteButtons.forEach(btn => {
                     const meetingId = btn.dataset.id;
@@ -623,6 +613,7 @@
                 emailButtons.forEach(btn => btn.disabled = true);
                 deleteButtons.forEach(btn => btn.disabled = true);
                 titleTextareas.forEach(ta => ta.disabled = true);
+                addLinkButtons.forEach(btn => btn.disabled = true);
 
                 unlockAdminBtn.textContent = '解锁';
                 unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
@@ -708,18 +699,14 @@
                 }
             }, true);
 
-            scheduleList.addEventListener('change', (event) => {
-                if (event.target.matches('.upload-input')) {
-                    handleFileUpload(event);
-                }
-            });
-
             scheduleList.addEventListener('click', (event) => {
                 const target = event.target;
                 if (target.matches('.delete-file-btn')) {
                     handleFileDelete(target);
                 } else if (target.matches('.generate-email-btn')) {
                     handleEmailGeneration(target);
+                } else if (target.matches('.add-link-btn')) {
+                    handleManualLink(target);
                 }
             });
         }
