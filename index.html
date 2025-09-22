@@ -191,7 +191,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, writeBatch, deleteField, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getStorage, ref, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
+        import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-storage.js";
 
         const allSchedules = {
             "2025-Fall": {
@@ -209,6 +209,7 @@
                     { id: 19, date: '2026-01-13', presenter: '乔曼' }, { id: 20, date: '2026-01-20', presenter: '文润' },
                     { id: 21, date: '2026-01-27', presenter: '罗达' }, { id: 22, date: '2026-02-03', presenter: '彭昊' },
                     { id: 23, date: '2026-02-10', presenter: '郑宪忠' },
+                ]
             }
         };
         
@@ -349,6 +350,7 @@
                     : `<p class="text-2xl font-bold text-gray-800 mt-1">${item.presenter}</p>`;
                 
                 let deleteButtonHTML = '';
+                // Show delete button only if admin is unlocked AND the current user is the uploader
                 if (item.fileURL && currentUser && item.uploaderUid === currentUser.uid) {
                     deleteButtonHTML = `<button data-id="${item.id}" class="delete-file-btn text-xs text-red-600 hover:text-red-800" disabled>删除</button>`;
                 }
@@ -361,10 +363,14 @@
                         </div>
                     `
                     : `
-                        <p class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
-                        <button data-id="${item.id}" class="add-link-btn admin-control w-full text-xs bg-gray-300 text-gray-800 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-400 transition" disabled>
-                            + 手动添加链接
-                        </button>
+                        <p id="file-status-${item.id}" class="text-sm text-gray-500 truncate mb-2">PPT: 尚未上传</p>
+                        <div id="progress-container-${item.id}" class="hidden my-2">
+                            <div class="progress-bar"><div id="progress-bar-${item.id}" class="progress-bar-inner"></div></div>
+                        </div>
+                        <label for="file-upload-${item.id}" class="file-input-label w-full text-center block bg-gray-200 text-gray-700 font-semibold py-1.5 px-3 rounded-md hover:bg-gray-300 transition">
+                            选择文件
+                        </label>
+                        <input type="file" id="file-upload-${item.id}" data-id="${item.id}" class="hidden upload-input" accept=".ppt, .pptx, .pdf">
                     `;
 
                 card.innerHTML = `
@@ -496,6 +502,40 @@
             }
         }
 
+        function handleFileUpload(event) {
+            const meetingId = event.target.dataset.id;
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const storageRef = ref(storage, `${currentSemesterKey}/${meetingId}/${file.name}`);
+            const uploadTask = uploadBytesResumable(storageRef, file);
+
+            const progressContainer = document.getElementById(`progress-container-${meetingId}`);
+            const progressBar = document.getElementById(`progress-bar-${meetingId}`);
+            if (progressContainer) progressContainer.style.display = 'block';
+
+            uploadTask.on('state_changed', 
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    if (progressBar) progressBar.style.width = progress + '%';
+                }, 
+                (error) => {
+                    console.error("Upload failed:", error);
+                    alert("上传失败，请稍后再试。");
+                    if (progressContainer) progressContainer.style.display = 'none';
+                }, 
+                async () => {
+                    const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                    const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
+                    await updateDoc(docRef, {
+                        fileURL: downloadURL,
+                        fileName: file.name,
+                        uploaderUid: currentUser.uid
+                    });
+                }
+            );
+        }
+
         async function handleFileDelete(button) {
             if (!isAdminUnlocked) return;
             const meetingId = button.dataset.id;
@@ -529,34 +569,6 @@
                 }
             }
         }
-        
-        async function handleManualLink(button) {
-            if (!isAdminUnlocked) return;
-            const meetingId = button.dataset.id;
-            
-            const fileURL = prompt("请输入您已上传到Firebase Storage的文件的公开访问URL:");
-            if (!fileURL || !fileURL.startsWith('https')) {
-                alert("请输入一个有效的URL。");
-                return;
-            }
-
-            const fileName = prompt("请输入文件显示名称 (例如: meeting.pptx):", "presentation.pptx");
-            if (!fileName) return;
-
-            try {
-                const docRef = doc(db, "semesters", currentSemesterKey, "meetings", meetingId);
-                await updateDoc(docRef, {
-                    fileURL: fileURL,
-                    fileName: fileName,
-                    uploaderUid: currentUser.uid
-                });
-                alert("链接添加成功！");
-            } catch (error) {
-                console.error("Failed to add link:", error);
-                alert("添加链接失败，请检查控制台错误信息。");
-            }
-        }
-
 
         function handleEmailGeneration(button) {
             if (!isAdminUnlocked) return;
@@ -587,13 +599,10 @@
             const emailButtons = document.querySelectorAll('.generate-email-btn');
             const deleteButtons = document.querySelectorAll('.delete-file-btn');
             const titleTextareas = document.querySelectorAll('.title-textarea');
-            const addLinkButtons = document.querySelectorAll('.add-link-btn');
-
 
             if (isAdminUnlocked) {
                 emailButtons.forEach(btn => btn.disabled = false);
                 titleTextareas.forEach(ta => ta.disabled = false);
-                addLinkButtons.forEach(btn => btn.disabled = false);
                 
                 deleteButtons.forEach(btn => {
                     const meetingId = btn.dataset.id;
@@ -613,7 +622,6 @@
                 emailButtons.forEach(btn => btn.disabled = true);
                 deleteButtons.forEach(btn => btn.disabled = true);
                 titleTextareas.forEach(ta => ta.disabled = true);
-                addLinkButtons.forEach(btn => btn.disabled = true);
 
                 unlockAdminBtn.textContent = '解锁';
                 unlockAdminBtn.classList.add('bg-gray-500', 'hover:bg-gray-600');
@@ -699,14 +707,18 @@
                 }
             }, true);
 
+            scheduleList.addEventListener('change', (event) => {
+                if (event.target.matches('.upload-input')) {
+                    handleFileUpload(event);
+                }
+            });
+
             scheduleList.addEventListener('click', (event) => {
                 const target = event.target;
                 if (target.matches('.delete-file-btn')) {
                     handleFileDelete(target);
                 } else if (target.matches('.generate-email-btn')) {
                     handleEmailGeneration(target);
-                } else if (target.matches('.add-link-btn')) {
-                    handleManualLink(target);
                 }
             });
         }
@@ -721,9 +733,9 @@
                     apiKey: "AIzaSyAiF5ftwE-R7FbUnjPKqy654wbdmcXmJE0",
                     authDomain: "xzz-s-seminar.firebaseapp.com",
                     projectId: "xzz-s-seminar",
-                    storageBucket: "xzz-s-seminar.appspot.com",
+                    storageBucket: "xzz-s-seminar.firebasestorage.app",
                     messagingSenderId: "97868292703",
-                    appId: "1:978682_rest_of_id",
+                    appId: "1:97868292703:web:bc1cf080ef600ef6a171ea",
                     measurementId: "G-XWWW57GQYZ"
                   };
             
