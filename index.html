@@ -375,7 +375,7 @@
 
                 card.innerHTML = `
                     <div>
-                        <p class="text-sm text-gray-500">${item.date.replace(/-/g, '年', 1).replace(/-/g, '月', 1) + '日'}</p>
+                        <p class="text-sm text-gray-500">${item.date.replace(/-/, '年').replace(/-/, '月') + '日'}</p>
                         ${presenterHTML}
                     </div>
                     <div class="mt-4 pt-4 border-t border-amber-200/80 space-y-3">
@@ -590,7 +590,7 @@
 
             const recipients = participants.map(p => p.email).join(',');
             const subject = `组会通知: ${cardData.date} - ${title}`;
-            const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/g, '年', 1).replace(/-/g, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n\n组会网站地址：https://rainw7.github.io/groupseminar/\n期待您的参与！\n\n此致`;
+            const body = `大家好，\n\n提醒您参加本次组会。\n\n日期: ${cardData.date.replace(/-/, '年').replace(/-/, '月') + '日'}\n主讲人: ${cardData.presenter}\n主题: ${title}\n\n\n组会网站地址：https://rainw7.github.io/groupseminar/\n期待您的参与！\n\n此致`;
             const mailtoLink = `mailto:${recipients}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
             window.location.href = mailtoLink;
         }
